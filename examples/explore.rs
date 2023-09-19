@@ -174,7 +174,7 @@ pub mod example {
     // Entry //
     ///////////
     impl StateMachine {
-        pub fn entry(&mut self) -> Entry<'_> {
+        pub fn entry(&mut self) -> Entry {
             // mut - must go first for borrow-checking
             if let State::BeautifulBridge(_) = self.inner.as_ref().unwrap() {
                 return Entry::BeautifulBridge(BeautifulBridgeTransition {

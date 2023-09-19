@@ -6,6 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+heck = "0.4.1"
+proc-macro2 = { version = "1.0.67", default-features = false }
 quote = { version = "1.0.33", default-features = false }
 
 [dev-dependencies]
