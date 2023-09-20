@@ -233,6 +233,12 @@ impl FSMGenerator {
             }
         }
 
+        let entry_enum_lifetime_param = match entry_mut_ctor.is_empty() && entry_ref_ctor.is_empty()
+        {
+            true => None,
+            false => Some(quote!(<'a>)),
+        };
+
         quote! {
             pub struct #state_machine_name {
                 /// Must always be [`Some`] when observable by a user
@@ -266,8 +272,7 @@ impl FSMGenerator {
 
             #transitions
 
-            // TODO(aatifsyed): this lifetime param might be dead
-            pub enum #entry_enum_name<'a> {
+            pub enum #entry_enum_name #entry_enum_lifetime_param {
                 #entry_enum_variants
             }
         }
@@ -371,19 +376,9 @@ impl FSMGenerator {
     }
 }
 
-fn main() {
-    let generator = FSMGenerator::parse_dot
-        .parse2(quote! {
-            digraph {
-                // server/sender path
-                CLOSED -> LISTEN -> SYN_RECEIVED -> ESTABLISHED -> CLOSE_WAIT -> LAST_ACK -> CLOSED
-
-                // client/receiver path
-                CLOSED -> SYN_SENT -> SYN_ACK_ACK -> ESTABLISHED -> FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT -> CLOSED
-            }
-        })
-        .unwrap();
-
-    let f = syn::parse2::<File>(generator.codegen()).unwrap();
-    println!("{}", prettyplease::unparse(&f));
+fn main() -> anyhow::Result<()> {
+    let input = std::fs::read_to_string("/dev/stdin")?;
+    let output = syn::parse2::<File>(FSMGenerator::parse_dot.parse_str(&input)?.codegen())?;
+    println!("{}", prettyplease::unparse(&output));
+    Ok(())
 }

@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.75"
 heck = "0.4.1"
 prettyplease = "0.2.15"
 proc-macro2 = { version = "1.0.67", default-features = false }
