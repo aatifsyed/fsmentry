@@ -7,8 +7,15 @@ edition = "2021"
 
 [dependencies]
 heck = "0.4.1"
+prettyplease = "0.2.15"
 proc-macro2 = { version = "1.0.67", default-features = false }
 quote = { version = "1.0.33", default-features = false }
+syn = { version = "2.0.37", default-features = false, features = [
+    "full",
+    "parsing",
+    "printing",
+] }
+syn-graphs = { version = "0.1.0", path = "../syn-graphs" }
 
 [dev-dependencies]
 derive-quickcheck-arbitrary = "0.1.3"

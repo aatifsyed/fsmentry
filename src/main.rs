@@ -3,8 +3,13 @@ use std::collections::{HashMap, HashSet};
 use heck::{ToSnakeCase as _, ToUpperCamelCase as _};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
+use syn::{
+    parse::{ParseStream, Parser as _},
+    spanned::Spanned,
+    File,
+};
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Debug)]
 struct NodeId {
     inner: Ident,
 }
@@ -35,8 +40,10 @@ fn ident(s: impl AsRef<str>) -> Ident {
     Ident::new(s.as_ref(), Span::call_site())
 }
 
+#[derive(Debug)]
 struct NodeData {}
 
+#[derive(Debug)]
 struct FSMGenerator {
     /// All nodes must be in this map
     nodes: HashMap<NodeId, Option<NodeData>>,
@@ -267,54 +274,116 @@ impl FSMGenerator {
     }
 }
 
-fn main() {
-    macro_rules! nodes {
-        ($($fn_name:ident = $inner:ident),* $(,)?) => {
-            impl NodeId {
-                $(
-                    #[allow(non_snake_case)]
-                    fn $fn_name() -> Self {
-                        Self {
-                            inner: ident(stringify!($inner))
+impl FSMGenerator {
+    pub fn parse_dot(input: ParseStream) -> syn::Result<Self> {
+        macro_rules! bail {
+            ($span:expr, $reason:literal) => {
+                return Err(syn::Error::new($span, $reason))
+            };
+        }
+        use syn_graphs::dot::{
+            Directedness, EdgeOp, Graph, NodeId as DotNodeId, NodeIdOrSubgraph, Statements, Stmt,
+            StmtEdge, StmtNode, ID,
+        };
+        let Graph {
+            direction,
+            statements,
+            ..
+        } = input.parse::<Graph>()?;
+        if !input.is_empty() {
+            bail!(input.span(), "unexpected trailing input")
+        }
+        let Directedness::Digraph(_) = direction else {
+            bail!(direction.span(), "must be a digraph")
+        };
+
+        let mut nodes = HashMap::new();
+        let mut edges = HashSet::new();
+
+        process_statements(&mut nodes, &mut edges, statements)?;
+
+        return Ok(Self { nodes, edges });
+
+        fn process_statements(
+            nodes: &mut HashMap<NodeId, Option<NodeData>>,
+            edges: &mut HashSet<(NodeId, NodeId)>,
+            statements: Statements,
+        ) -> syn::Result<()> {
+            let Statements { list } = statements;
+            for (statement, _) in list {
+                let span = statement.span();
+                match statement {
+                    Stmt::Node(StmtNode {
+                        node_id:
+                            DotNodeId {
+                                // TODO(aatifsyed): could support more things here
+                                id: ID::AnyIdent(inner),
+                                port: _,
+                            },
+                        attributes: _,
+                    }) => {
+                        nodes.insert(NodeId { inner }, None);
+                    }
+                    Stmt::Node(_) => {
+                        bail!(span, "only nodes with bare idents are supported")
+                    }
+                    Stmt::Attr(_) | Stmt::Assign(_) | Stmt::Subgraph(_) => {
+                        bail!(span, "only node and edge statements are supported")
+                    }
+                    Stmt::Edge(StmtEdge {
+                        from,
+                        ops,
+                        attrs: _,
+                    }) => {
+                        let mut from = get_ident(from)?;
+                        for (op, to) in ops {
+                            let EdgeOp::Directed { .. } = op else {
+                                bail!(op.span(), "only directed edges are supported")
+                            };
+                            let to = get_ident(to)?;
+                            // TODO(aatifsyed): clobbering could happen here
+                            nodes.insert(
+                                NodeId {
+                                    inner: from.clone(),
+                                },
+                                None,
+                            );
+                            nodes.insert(NodeId { inner: to.clone() }, None);
+                            edges.insert((NodeId { inner: from }, NodeId { inner: to.clone() }));
+                            from = to;
                         }
                     }
-                )*
+                }
             }
-        };
-    }
-    nodes!(
-        POPULATED_ISLAND = PopulatedIsland,
-        DESERT_ISLAND = DesertIsland,
-        BEAUTIFUL_BRIDGE = BeautifulBridge,
-        PLANK = Plank,
-        TOMBSTONE = Tombstone,
-        UNMARKED_GRAVE = UnmarkedGrave,
-        FOUNTAIN = Fountain,
-        STREAM = Stream,
-    );
+            return Ok(());
 
-    let code = FSMGenerator {
-        nodes: HashMap::from_iter([
-            (NodeId::POPULATED_ISLAND(), Some(NodeData {})),
-            (NodeId::DESERT_ISLAND(), None),
-            (NodeId::BEAUTIFUL_BRIDGE(), Some(NodeData {})),
-            (NodeId::PLANK(), None),
-            (NodeId::TOMBSTONE(), Some(NodeData {})),
-            (NodeId::UNMARKED_GRAVE(), None),
-            (NodeId::FOUNTAIN(), Some(NodeData {})),
-            (NodeId::STREAM(), None),
-        ]),
-        edges: HashSet::from_iter([
-            (NodeId::BEAUTIFUL_BRIDGE(), NodeId::TOMBSTONE()),
-            (NodeId::BEAUTIFUL_BRIDGE(), NodeId::UNMARKED_GRAVE()),
-            (NodeId::PLANK(), NodeId::TOMBSTONE()),
-            (NodeId::PLANK(), NodeId::UNMARKED_GRAVE()),
-            (NodeId::FOUNTAIN(), NodeId::BEAUTIFUL_BRIDGE()),
-            (NodeId::FOUNTAIN(), NodeId::PLANK()),
-            (NodeId::STREAM(), NodeId::BEAUTIFUL_BRIDGE()),
-            (NodeId::STREAM(), NodeId::PLANK()),
-        ]),
+            fn get_ident(input: NodeIdOrSubgraph) -> syn::Result<Ident> {
+                let span = input.span();
+                match input {
+                    NodeIdOrSubgraph::NodeId(DotNodeId {
+                        id: ID::AnyIdent(id),
+                        port: _,
+                    }) => Ok(id),
+                    _ => bail!(span, "only bare idents are supported here"),
+                }
+            }
+        }
     }
-    .codegen();
-    println!("{code}");
+}
+
+fn main() {
+    let generator = FSMGenerator::parse_dot
+        .parse2(quote! {
+            digraph {
+                // server/sender path
+                CLOSED -> LISTEN -> SYN_RECEIVED -> ESTABLISHED -> CLOSE_WAIT -> LAST_ACK -> CLOSED
+
+                // client/receiver path
+                CLOSED -> SYN_SENT -> SYN_ACK_ACK -> ESTABLISHED -> FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT -> CLOSED
+            }
+        })
+        .unwrap();
+
+    let f = syn::parse2::<File>(generator.codegen()).unwrap();
+    println!("{}", prettyplease::unparse(&f));
 }
