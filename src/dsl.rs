@@ -168,8 +168,15 @@ fn minus_then_arrow(input: ParseStream) -> bool {
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct DocumentedArrow {
     pub minus: Token![-],
+    pub minus2: Option<Token![-]>,
     pub doc: LitStr,
+    #[peek_with(not_short_arrow)]
+    pub minus3: Option<Token![-]>,
     pub arrow: pun::ShortArrow,
+}
+
+fn not_short_arrow(input: ParseStream) -> bool {
+    !input.peek(pun::ShortArrow)
 }
 
 #[test]
@@ -177,4 +184,6 @@ fn parse_arrow() {
     assert!(matches!(syn::parse_quote!(->), Edge::Short(_)));
     assert!(matches!(syn::parse_quote!(-->), Edge::Long(..)));
     assert!(matches!(syn::parse_quote!(-"hello"->), Edge::Documented(_)));
+    assert!(matches!(syn::parse_quote!(--"ehlo"->), Edge::Documented(_)));
+    assert!(matches!(syn::parse_quote!(--"elo"-->), Edge::Documented(_)));
 }
