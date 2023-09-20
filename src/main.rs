@@ -64,6 +64,7 @@ impl FSMGenerator {
     fn data_accessor_name(&self) -> Ident {
         ident("data")
     }
+    #[allow(unused)] // for documentation
     /// [`None`] if the node is a source
     fn incoming(&self, to: &NodeId) -> Option<Vec<&NodeId>> {
         let vec = self
