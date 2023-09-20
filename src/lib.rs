@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+mod dsl;
 
 use heck::{ToSnakeCase as _, ToUpperCamelCase as _};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
+use std::collections::{HashMap, HashSet};
 use syn::{parse::ParseStream, spanned::Spanned as _};
 
 #[derive(Hash, PartialEq, Eq, Debug)]

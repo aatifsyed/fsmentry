@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
+derive-quote-to-tokens = { version = "0.1.0", path = "../derive-quote-to-tokens" }
+derive-syn-parse = "0.1.5"
 heck = "0.4.1"
 prettyplease = "0.2.15"
 proc-macro2 = { version = "1.0.67", default-features = false }
@@ -20,4 +22,6 @@ syn-graphs = { version = "0.1.0", path = "../syn-graphs" }
 
 [dev-dependencies]
 derive-quickcheck-arbitrary = "0.1.3"
+pretty_assertions = "1.4.0"
 quickcheck = "1.0.3"
+syn = { version = "2.0.37", features = ["extra-traits"] }
