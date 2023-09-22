@@ -285,37 +285,37 @@ impl FSMGenerator {
             };
         }
         use syn_graphs::dot::{
-            Directedness, EdgeOp, Graph, NodeId as DotNodeId, NodeIdOrSubgraph, Statements, Stmt,
-            StmtEdge, StmtNode, ID,
+            EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId, Stmt,
+            StmtEdge, StmtList, StmtNode, ID,
         };
         let Graph {
-            direction,
-            statements,
+            directedness,
+            stmt_list,
             ..
         } = input.parse::<Graph>()?;
         if !input.is_empty() {
             bail!(input.span(), "unexpected trailing input")
         }
-        let Directedness::Digraph(_) = direction else {
-            bail!(direction.span(), "must be a digraph")
+        let GraphDirectedness::Digraph(_) = directedness else {
+            bail!(directedness.span(), "must be a digraph")
         };
 
         let mut nodes = HashMap::new();
         let mut edges = HashSet::new();
 
-        process_statements(&mut nodes, &mut edges, statements)?;
+        process_stmt_list(&mut nodes, &mut edges, stmt_list)?;
 
         return Ok(Self { nodes, edges });
 
-        fn process_statements(
-            nodes: &mut HashMap<NodeId, Option<NodeData>>,
-            edges: &mut HashSet<(NodeId, NodeId)>,
-            statements: Statements,
+        fn process_stmt_list(
+            all_nodes: &mut HashMap<NodeId, Option<NodeData>>,
+            all_edges: &mut HashSet<(NodeId, NodeId)>,
+            statements: StmtList,
         ) -> syn::Result<()> {
-            let Statements { list } = statements;
-            for (statement, _) in list {
-                let span = statement.span();
-                match statement {
+            let StmtList { stmts } = statements;
+            for (stmt, _) in stmts {
+                let span = stmt.span();
+                match stmt {
                     Stmt::Node(StmtNode {
                         node_id:
                             DotNodeId {
@@ -323,9 +323,9 @@ impl FSMGenerator {
                                 id: ID::AnyIdent(inner),
                                 port: _,
                             },
-                        attributes: _,
+                        attrs: _,
                     }) => {
-                        nodes.insert(NodeId { inner }, None);
+                        all_nodes.insert(NodeId { inner }, None);
                     }
                     Stmt::Node(_) => {
                         bail!(span, "only nodes with bare idents are supported")
@@ -335,24 +335,25 @@ impl FSMGenerator {
                     }
                     Stmt::Edge(StmtEdge {
                         from,
-                        ops,
+                        edges,
                         attrs: _,
                     }) => {
                         let mut from = get_ident(from)?;
-                        for (op, to) in ops {
-                            let EdgeOp::Directed { .. } = op else {
-                                bail!(op.span(), "only directed edges are supported")
+                        for (directedness, to) in edges {
+                            let EdgeDirectedness::Directed { .. } = directedness else {
+                                bail!(directedness.span(), "only directed edges are supported")
                             };
                             let to = get_ident(to)?;
                             // TODO(aatifsyed): clobbering could happen here
-                            nodes.insert(
+                            all_nodes.insert(
                                 NodeId {
                                     inner: from.clone(),
                                 },
                                 None,
                             );
-                            nodes.insert(NodeId { inner: to.clone() }, None);
-                            edges.insert((NodeId { inner: from }, NodeId { inner: to.clone() }));
+                            all_nodes.insert(NodeId { inner: to.clone() }, None);
+                            all_edges
+                                .insert((NodeId { inner: from }, NodeId { inner: to.clone() }));
                             from = to;
                         }
                     }
@@ -360,10 +361,10 @@ impl FSMGenerator {
             }
             return Ok(());
 
-            fn get_ident(input: NodeIdOrSubgraph) -> syn::Result<Ident> {
+            fn get_ident(input: EdgeTarget) -> syn::Result<Ident> {
                 let span = input.span();
                 match input {
-                    NodeIdOrSubgraph::NodeId(DotNodeId {
+                    EdgeTarget::NodeId(DotNodeId {
                         id: ID::AnyIdent(id),
                         port: _,
                     }) => Ok(id),

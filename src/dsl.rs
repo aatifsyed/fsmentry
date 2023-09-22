@@ -61,7 +61,7 @@ impl Parse for Stmt {
 #[derive(Parse)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct StmtEdges {
-    // Attributes will be stolen from the first Node
+    /// Attributes will be stolen from the first Node
     #[call(Attribute::parse_outer)]
     pub attrs: Vec<Attribute>,
     pub from: Node,
@@ -185,5 +185,6 @@ fn parse_arrow() {
     assert!(matches!(syn::parse_quote!(-->), Edge::Long(..)));
     assert!(matches!(syn::parse_quote!(-"hello"->), Edge::Documented(_)));
     assert!(matches!(syn::parse_quote!(--"ehlo"->), Edge::Documented(_)));
+    assert!(matches!(syn::parse_quote!(-"ehlo"-->), Edge::Documented(_)));
     assert!(matches!(syn::parse_quote!(--"elo"-->), Edge::Documented(_)));
 }

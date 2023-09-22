@@ -43,10 +43,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive-quote-to-tokens"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49f604b71ee4eb4938f3f44838bad113df69e576d96f8daa1708453d72f5ac8b"
+dependencies = [
+ "syn-helpers",
+]
+
+[[package]]
 name = "derive-syn-parse"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e79116f119dd1dba1abf1f3405f03b9b0e79a27a3883864bfebded8a3dc768cd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "derive_more"
+version = "0.99.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb810d30a7c1953f91334de7244731fc3f3c10d7fe163338a35b9f640960321"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -81,7 +101,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "derive-quickcheck-arbitrary",
- "derive-quote-to-tokens",
+ "derive-quote-to-tokens 0.1.0",
  "derive-syn-parse",
  "heck",
  "pretty_assertions",
@@ -273,8 +293,9 @@ dependencies = [
 name = "syn-graphs"
 version = "0.1.0"
 dependencies = [
- "derive-quote-to-tokens",
+ "derive-quote-to-tokens 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "derive-syn-parse",
+ "derive_more",
  "proc-macro2",
  "quote",
  "syn 2.0.37",
