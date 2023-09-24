@@ -5,18 +5,52 @@ pub mod example {
     use derive_quickcheck_arbitrary::Arbitrary;
 
     pub struct StateMachine {
-        /// Must always be [`Some`] when observable by a user
-        inner: Option<State>,
+        state: State,
     }
 
     impl StateMachine {
         pub fn new(initial: State) -> Self {
-            Self {
-                inner: Some(initial),
-            }
+            Self { state: initial }
         }
         pub fn state(&self) -> &State {
-            self.inner.as_ref().unwrap()
+            &self.state
+        }
+        pub fn state_mut(&mut self) -> &mut State {
+            &mut self.state
+        }
+        pub fn entry(&mut self) -> Entry {
+            match &mut self.state {
+                State::PopulatedIsland(_) => {
+                    if let State::PopulatedIsland(data) = &mut self.state {
+                        // reborrow to get the data
+                        Entry::PopulatedIsland(data)
+                    } else {
+                        unreachable!("we've held an immutable reference to state, so state cannot have changed")
+                    }
+                }
+                State::DesertIsland => Entry::DesertIsland,
+                State::BeautifulBridge(_) => Entry::BeautifulBridge(BeautifulBridgeTransition {
+                    inner: &mut self.state,
+                }),
+                State::Plank => Entry::Plank(PlankTransition {
+                    inner: &mut self.state,
+                }),
+                State::Tombstone(_) => {
+                    if let State::Tombstone(data) = &mut self.state {
+                        // reborrow to get the data
+                        Entry::Tombstone(data)
+                    } else {
+                        unreachable!("we've held an immutable reference to state, so state cannot have changed")
+                    }
+                }
+                State::UnmarkedGrave => Entry::UnmarkedGrave,
+                State::Fountain(_) => Entry::Fountain(FountainTransition {
+                    inner: &mut self.state,
+                }),
+                State::Stream => Entry::Stream(StreamTransition {
+                    inner: &mut self.state,
+                }),
+            }
         }
     }
 
@@ -53,11 +87,11 @@ pub mod example {
     pub struct FountainData {}
 
     pub enum Entry<'a> {
-        PopulatedIsland(&'a PopulatedIslandData),
+        PopulatedIsland(&'a mut PopulatedIslandData),
         DesertIsland,
         BeautifulBridge(BeautifulBridgeTransition<'a>),
         Plank(PlankTransition<'a>),
-        Tombstone(&'a TombstoneData),
+        Tombstone(&'a mut TombstoneData),
         UnmarkedGrave,
         Fountain(FountainTransition<'a>),
         Stream(StreamTransition<'a>),
@@ -68,19 +102,19 @@ pub mod example {
     //////////////////////////////
 
     pub struct BeautifulBridgeTransition<'a> {
-        inner: &'a mut Option<State>,
+        inner: &'a mut State,
     }
 
     pub struct PlankTransition<'a> {
-        inner: &'a mut Option<State>,
+        inner: &'a mut State,
     }
 
     pub struct FountainTransition<'a> {
-        inner: &'a mut Option<State>,
+        inner: &'a mut State,
     }
 
     pub struct StreamTransition<'a> {
-        inner: &'a mut Option<State>,
+        inner: &'a mut State,
     }
 
     ///////////////////////////////////////
@@ -88,8 +122,14 @@ pub mod example {
     ///////////////////////////////////////
 
     impl BeautifulBridgeTransition<'_> {
-        pub fn data(&mut self) -> &BeautifulBridgeData {
-            let Some(State::BeautifulBridge(data)) = self.inner else {
+        pub fn get(&self) -> &BeautifulBridgeData {
+            let State::BeautifulBridge(data) = &self.inner else {
+                unreachable!()
+            };
+            data
+        }
+        pub fn get_mut(&mut self) -> &mut BeautifulBridgeData {
+            let State::BeautifulBridge(data) = self.inner else {
                 unreachable!()
             };
             data
@@ -97,8 +137,14 @@ pub mod example {
     }
 
     impl FountainTransition<'_> {
-        pub fn data(&mut self) -> &FountainData {
-            let Some(State::Fountain(data)) = self.inner else {
+        pub fn get(&self) -> &FountainData {
+            let State::Fountain(data) = &self.inner else {
+                unreachable!()
+            };
+            data
+        }
+        pub fn get_mut(&mut self) -> &mut FountainData {
+            let State::Fountain(data) = self.inner else {
                 unreachable!()
             };
             data
@@ -112,18 +158,18 @@ pub mod example {
     impl BeautifulBridgeTransition<'_> {
         // data -> data
         pub fn tombstone(self, next: TombstoneData) -> BeautifulBridgeData {
-            let Some(State::BeautifulBridge(prev)) = self.inner.take() else {
+            let prev = std::mem::replace(self.inner, State::Tombstone(next));
+            let State::BeautifulBridge(prev) = prev else {
                 unreachable!()
             };
-            *self.inner = Some(State::Tombstone(next));
             prev
         }
         // data -> no data
         pub fn unmarked_grave(self) -> BeautifulBridgeData {
-            let Some(State::BeautifulBridge(prev)) = self.inner.take() else {
+            let prev = std::mem::replace(self.inner, State::UnmarkedGrave);
+            let State::BeautifulBridge(prev) = prev else {
                 unreachable!()
             };
-            *self.inner = Some(State::UnmarkedGrave);
             prev
         }
     }
@@ -131,89 +177,42 @@ pub mod example {
     impl PlankTransition<'_> {
         // no data -> data
         pub fn tombstone(self, next: TombstoneData) {
-            assert!(matches!(self.inner, Some(State::Plank)));
-            *self.inner = Some(State::Tombstone(next));
+            let prev = std::mem::replace(self.inner, State::Tombstone(next));
+            assert!(matches!(prev, State::Plank));
         }
         // no data -> no data
         pub fn unmarked_grave(self) {
-            assert!(matches!(self.inner, Some(State::Plank)));
-            *self.inner = Some(State::UnmarkedGrave);
+            let prev = std::mem::replace(self.inner, State::UnmarkedGrave);
+            assert!(matches!(prev, State::Plank));
         }
     }
 
     // Included for completeness
     impl FountainTransition<'_> {
         pub fn beautiful_bridge(self, next: BeautifulBridgeData) -> FountainData {
-            let Some(State::Fountain(prev)) = self.inner.take() else {
+            let prev = std::mem::replace(self.inner, State::BeautifulBridge(next));
+            let State::Fountain(prev) = prev else {
                 unreachable!()
             };
-            *self.inner = Some(State::BeautifulBridge(next));
             prev
         }
         pub fn plank(self) -> FountainData {
-            let Some(State::Fountain(prev)) = self.inner.take() else {
+            let prev = std::mem::replace(self.inner, State::Plank);
+            let State::Fountain(prev) = prev else {
                 unreachable!()
             };
-            *self.inner = Some(State::Plank);
             prev
         }
     }
 
     impl StreamTransition<'_> {
         pub fn beautiful_bridge(self, next: BeautifulBridgeData) {
-            assert!(matches!(self.inner, Some(State::Stream)));
-            *self.inner = Some(State::BeautifulBridge(next));
+            let prev = std::mem::replace(self.inner, State::BeautifulBridge(next));
+            assert!(matches!(prev, State::Stream));
         }
         pub fn plank(self) {
-            assert!(matches!(self.inner, Some(State::Stream)));
-            *self.inner = Some(State::Plank);
-        }
-    }
-
-    ///////////
-    // Entry //
-    ///////////
-    impl StateMachine {
-        pub fn entry(&mut self) -> Entry {
-            // mut - must go first for borrow-checking
-            if let State::BeautifulBridge(_) = self.inner.as_ref().unwrap() {
-                return Entry::BeautifulBridge(BeautifulBridgeTransition {
-                    inner: &mut self.inner,
-                });
-            }
-            if let State::Fountain(_) = self.inner.as_ref().unwrap() {
-                return Entry::Fountain(FountainTransition {
-                    inner: &mut self.inner,
-                });
-            }
-            if let State::Plank = self.inner.as_ref().unwrap() {
-                return Entry::Plank(PlankTransition {
-                    inner: &mut self.inner,
-                });
-            }
-            if let State::Stream = self.inner.as_ref().unwrap() {
-                return Entry::Stream(StreamTransition {
-                    inner: &mut self.inner,
-                });
-            }
-
-            // ref
-            if let State::PopulatedIsland(data) = self.inner.as_ref().unwrap() {
-                return Entry::PopulatedIsland(data);
-            }
-            if let State::Tombstone(data) = self.inner.as_ref().unwrap() {
-                return Entry::Tombstone(data);
-            }
-
-            // empty
-            if let State::DesertIsland = self.inner.as_ref().unwrap() {
-                return Entry::DesertIsland;
-            }
-            if let State::UnmarkedGrave = self.inner.as_ref().unwrap() {
-                return Entry::UnmarkedGrave;
-            }
-
-            unreachable!()
+            let prev = std::mem::replace(self.inner, State::Plank);
+            assert!(matches!(prev, State::Stream));
         }
     }
 }
@@ -235,7 +234,8 @@ impl quickcheck::Testable for Test {
                 Entry::PopulatedIsland(PopulatedIslandData {}) => break,
                 Entry::DesertIsland => break,
                 Entry::BeautifulBridge(mut tsn) => {
-                    let _data = tsn.data();
+                    let _data = tsn.get();
+                    let _data = tsn.get_mut();
                     match bool::arbitrary(g) {
                         true => tsn.tombstone(TombstoneData {}),
                         false => tsn.unmarked_grave(),
@@ -250,7 +250,8 @@ impl quickcheck::Testable for Test {
                 Entry::Tombstone(TombstoneData {}) => break,
                 Entry::UnmarkedGrave => break,
                 Entry::Fountain(mut tsn) => {
-                    let _data = tsn.data();
+                    let _data = tsn.get();
+                    let _data = tsn.get_mut();
                     match bool::arbitrary(g) {
                         true => tsn.beautiful_bridge(BeautifulBridgeData {}),
                         false => tsn.plank(),
