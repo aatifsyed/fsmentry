@@ -10,6 +10,7 @@ anyhow = "1.0.75"
 derive-quote-to-tokens = { version = "0.1.0", path = "../derive-quote-to-tokens" }
 derive-syn-parse = "0.1.5"
 heck = "0.4.1"
+itertools = "0.11.0"
 prettyplease = "0.2.15"
 proc-macro2 = { version = "1.0.67", default-features = false }
 quote = { version = "1.0.33", default-features = false }

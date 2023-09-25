@@ -4,6 +4,28 @@ use quickcheck::Arbitrary as _;
 pub mod example {
     use derive_quickcheck_arbitrary::Arbitrary;
 
+    // digraph {
+    //     PopulatedIsland [type = String;];
+    //     DesertIsland;
+    //     BeautifulBridge [type = "Vec<u8>";];
+    //     Plank;
+    //     Tombstone [type = char;];
+    //     UnmarkedGrave;
+    //     Fountain [type = "std::net::IpAddr";];
+    //     Stream;
+
+    //     BeautifulBridge -> Tombstone;
+    //     BeautifulBridge -> UnmarkedGrave;
+
+    //     Plank -> Tombstone;
+    //     Plank -> UnmarkedGrave;
+
+    //     Fountain -> BeautifulBridge;
+    //     Fountain -> Plank;
+
+    //     Stream -> BeautifulBridge;
+    //     Stream -> Plank;
+    // };
     pub struct StateMachine {
         state: State,
     }
