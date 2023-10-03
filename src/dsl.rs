@@ -6,6 +6,8 @@ use syn::{
     token, Attribute, LitStr, Token, Type, Visibility,
 };
 
+use crate::util::OuterDocString;
+
 pub mod pun {
     // `-->` cannot be custom punctuation because the first Minus token is Alone
     syn::custom_punctuation!(ShortArrow, ->);
@@ -16,6 +18,9 @@ fn parse_dsl() {
     let dsl: Dsl = syn::parse_quote! {
         /// These are state machine docs
         /// There will be a nice diagram here too
+        ///
+        /// The state machine struct and state enum will both implement Debug now
+        #[derive(Debug)]
         pub TrafficLight {
             /// a node description
             Foo;
@@ -26,7 +31,7 @@ fn parse_dsl() {
             Foo -> Bar;
 
             /// many edges
-            Foo --> Bar -> Baz;
+            Foo --> Bar -> Baz; // the arrow length doesn't mean anything
 
             Foo -"with inline docs"-> Bar;
 
@@ -66,6 +71,7 @@ impl Parse for Dsl {
 }
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[allow(clippy::large_enum_variant)]
 pub enum Stmt {
     Edges(StmtEdges),
     Node(StmtNode),
@@ -84,9 +90,8 @@ impl Parse for Stmt {
 #[derive(Parse)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct StmtEdges {
-    /// Attributes will be stolen from the first Node
-    #[call(Attribute::parse_outer)]
-    pub attrs: Vec<Attribute>,
+    #[call(OuterDocString::parse_many)]
+    pub attrs: Vec<OuterDocString>,
     pub from: Ident,
     pub edge: Edge,
     pub to: Ident,
@@ -108,8 +113,8 @@ impl StmtEdges {
 #[derive(Parse)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct StmtNode {
-    #[call(Attribute::parse_outer)]
-    pub attrs: Vec<Attribute>,
+    #[call(OuterDocString::parse_many)]
+    pub attrs: Vec<OuterDocString>,
     pub ident: Ident,
     pub colon: Option<Token![:]>,
     #[parse_if(colon.is_some())]
@@ -117,7 +122,7 @@ pub struct StmtNode {
     pub semi: Token![;],
 }
 
-#[derive(Parse)]
+#[derive(Parse, derive_quote_to_tokens::ToTokens)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub enum Edge {
     #[peek(pun::ShortArrow, name = "->")]
@@ -132,7 +137,7 @@ fn minus_then_arrow(input: ParseStream) -> bool {
     input.peek(Token![-]) && input.peek2(pun::ShortArrow)
 }
 
-#[derive(Parse)]
+#[derive(Parse, derive_quote_to_tokens::ToTokens)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct DocumentedArrow {
     pub minus: Token![-],
