@@ -2,20 +2,11 @@ mod dsl;
 mod util;
 
 use heck::{ToSnakeCase as _, ToUpperCamelCase as _};
-use itertools::Itertools as _;
 use proc_macro2::{Ident, Span};
 use quote::quote;
-use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
-    iter,
-};
+use std::{collections::HashMap, iter};
 use syn::{
-    parse::{Parse, ParseStream},
-    parse_quote,
-    punctuated::Punctuated,
-    spanned::Spanned as _,
-    token, Token,
+    parse::ParseStream, parse_quote, punctuated::Punctuated, spanned::Spanned as _, token, Token,
 };
 use util::OuterDocString;
 
@@ -97,7 +88,34 @@ impl FSMGenerator {
             self.state_machine_name()
         ))
     }
-    #[allow(unused)] // for documentation
+    fn getter_names(&self) -> (Ident, Ident) {
+        fn names(root: &str) -> impl Iterator<Item = (Ident, Ident)> + '_ {
+            (0..).map(move |n| {
+                let mut get = String::from(root);
+                let mut get_mut = format!("{}_mut", root);
+                for _ in 0..n {
+                    for s in [&mut get, &mut get_mut] {
+                        s.push('_')
+                    }
+                }
+
+                (ident(get), ident(get_mut))
+            })
+        }
+
+        for (get, get_mut) in itertools::interleave(names("get"), names("get_data")) {
+            if self.nodes.contains_key(&NodeId { inner: get.clone() }) {
+                continue;
+            }
+            if self.nodes.contains_key(&NodeId {
+                inner: get_mut.clone(),
+            }) {
+                continue;
+            }
+            return (get, get_mut);
+        }
+        unreachable!()
+    }
     /// [`None`] if the node is a source
     fn incoming(&self, to: &NodeId) -> Option<Vec<&NodeId>> {
         let vec = self
@@ -111,6 +129,41 @@ impl FSMGenerator {
         match vec.is_empty() {
             true => None,
             false => Some(vec),
+        }
+    }
+    fn reachability_docs(&self, node: &NodeId) -> Option<Vec<OuterDocString>> {
+        let mut docs = vec![];
+        let span = Span::call_site();
+        if let Some(incoming) = self.incoming(node) {
+            docs.push(OuterDocString::new(
+                "This node is reachable from the following states:",
+                span,
+            ));
+            for each in incoming {
+                docs.push(OuterDocString::new(
+                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
+                    span,
+                ))
+            }
+        }
+        if let Some(outgoing) = self.outgoing(node) {
+            if !docs.is_empty() {
+                docs.push(OuterDocString::new("", span))
+            }
+            docs.push(OuterDocString::new(
+                "This node can reach the following states:",
+                span,
+            ));
+            for (each, _) in outgoing {
+                docs.push(OuterDocString::new(
+                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
+                    span,
+                ))
+            }
+        }
+        match docs.is_empty() {
+            true => None,
+            false => Some(docs),
         }
     }
     /// [`None`] if the node is a sink
@@ -185,7 +238,7 @@ impl FSMGenerator {
         let mut entry_variants = Punctuated::<syn::Variant, Token![,]>::new();
         let mut entry_has_lifetime = false;
         let mut entry_construction = Vec::<syn::Arm>::new();
-        let mut transition_tys = Vec::<syn::Ident>::new();
+        let mut transition_tys = Vec::<syn::ItemStruct>::new();
         let mut transition_impls = Vec::<syn::ItemImpl>::new();
         for (
             node,
@@ -196,6 +249,14 @@ impl FSMGenerator {
         ) in self.nodes.iter()
         {
             let node_variant_name = node.variant();
+            let mut node_docs = node_docs.clone();
+            if let Some(reachability_docs) = self.reachability_docs(node) {
+                if !node_docs.is_empty() {
+                    node_docs.push(OuterDocString::new("", Span::call_site()))
+                }
+                node_docs.extend(reachability_docs)
+            }
+
             match (node_ty, self.outgoing(node)) {
                 (None, None) => {
                     // This node has no data, and no transitions, so the entry and state enums are bare
@@ -223,7 +284,12 @@ impl FSMGenerator {
                     // this node has transitions, so create a transition type
                     let transition_ty_name = self.transition_ty(node);
                     entry_has_lifetime = true;
-                    transition_tys.push(transition_ty_name.clone());
+                    transition_tys.push(parse_quote!(
+                        #(#node_docs)*
+                        #vis struct #transition_ty_name<'a> {
+                            inner: &'a mut #state_enum_name,
+                        }
+                    ));
                     entry_variants.push(
                         parse_quote!(#(#node_docs)* #node_variant_name(#transition_ty_name<'a>)),
                     );
@@ -238,15 +304,18 @@ impl FSMGenerator {
                             // this node has data, so store it in the state enum, and add getters for the transition type
                             state_variants
                                 .push(parse_quote!(#(#node_docs)* #node_variant_name(#ty)));
+                            let (get, get_mut) = self.getter_names();
                             transition_impls.push(parse_quote! {
                                 impl #transition_ty_name<'_> {
-                                    pub fn get(&self) -> & #ty {
+                                    /// Get a reference to the data stored in this state
+                                    pub fn #get(&self) -> & #ty {
                                         match &self.inner {
                                             #state_enum_name::#node_variant_name(data) => data,
                                             _ => ::core::unreachable!(#msg)
                                         }
                                     }
-                                    pub fn get_mut(&mut self) -> &mut #ty {
+                                    /// Get a mutable reference to the data stored in this state
+                                    pub fn #get_mut(&mut self) -> &mut #ty {
                                         match self.inner {
                                             #state_enum_name::#node_variant_name(data) => data,
                                             _ => ::core::unreachable!(#msg)
@@ -322,15 +391,20 @@ impl FSMGenerator {
         };
         let state_machine_methods: syn::ItemImpl = parse_quote! {
             impl #state_machine_name {
+                /// Create a new state machine
                 pub fn new(initial: #state_enum_name) -> Self {
                     Self { state: initial }
                 }
+                /// Get a reference to the current state of the state machine
                 pub fn state(&self) -> &#state_enum_name {
                     &self.state
                 }
+                /// Get a mutable reference to the current state of the state machine
                 pub fn state_mut(&mut self) -> &mut #state_enum_name {
                     &mut self.state
                 }
+                /// Transition the state machine
+                #[must_use = "The state must be inspected and transitioned through the returned enum"]
                 pub fn entry(&mut self) -> #entry_enum_name {
                     match &mut self.state {
                         #(#entry_construction)*
@@ -349,13 +423,17 @@ impl FSMGenerator {
             false => None,
             true => Some(quote!(<'a>)),
         };
+        let comment = format!("Created from [`{}::entry`].", state_machine_name);
         let entry_enum: syn::ItemEnum = parse_quote! {
-            /// Access to the current state with valid transitions for the state machine
+            /// Access to the current state with valid transitions for the state machine.
+            ///
+            #[doc = #comment]
             #vis enum #entry_enum_name #entry_enum_lifetime_param {
                 #entry_variants
             }
         };
-        transition_impls.extend(transition_tys.iter().map(|ident| {
+        transition_impls.extend(transition_tys.iter().map(|strukt| {
+            let ident = &strukt.ident;
             parse_quote! {
                 impl ::core::fmt::Debug for #ident<'_> {
                     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
@@ -364,13 +442,6 @@ impl FSMGenerator {
                 }
             }
         }));
-        let transition_tys = transition_tys.iter().map(|ident| -> syn::ItemStruct {
-            parse_quote!(
-                #vis struct #ident<'a> {
-                    inner: &'a mut #state_enum_name,
-                }
-            )
-        });
 
         parse_quote! {
             #state_machine_struct
@@ -477,144 +548,4 @@ impl FSMGenerator {
             edges,
         })
     }
-}
-
-#[cfg(never)]
-impl FSMGenerator {
-    pub fn parse_dot(input: ParseStream) -> syn::Result<Self> {
-        macro_rules! bail {
-            ($span:expr, $reason:literal) => {
-                return Err(syn::Error::new($span, $reason))
-            };
-        }
-        use syn_graphs::dot::{
-            EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId, Stmt,
-            StmtEdge, StmtList, StmtNode,
-        };
-        let Graph {
-            directedness,
-            stmt_list,
-            ..
-        } = input.parse::<Graph>()?;
-        if !input.is_empty() {
-            bail!(input.span(), "unexpected trailing input")
-        }
-        let GraphDirectedness::Digraph(_) = directedness else {
-            bail!(directedness.span(), "must be a digraph")
-        };
-
-        let mut nodes = HashMap::new();
-        let mut edges = HashSet::new();
-
-        process_stmt_list(&mut nodes, &mut edges, stmt_list)?;
-
-        return Ok(Self { nodes, edges });
-
-        fn process_stmt_list(
-            all_nodes: &mut HashMap<NodeId, NodeData>,
-            all_edges: &mut HashSet<(NodeId, NodeId)>,
-            statements: StmtList,
-        ) -> syn::Result<()> {
-            let StmtList { stmts } = statements;
-            for (stmt, _) in stmts {
-                let span = stmt.span();
-                match stmt {
-                    Stmt::Node(StmtNode {
-                        node_id:
-                            DotNodeId {
-                                // TODO(aatifsyed): could support more things here
-                                id: ID::AnyIdent(inner),
-                                port: _,
-                            },
-                        attrs,
-                    }) => {
-                        let ty = extract_ty(attrs)?;
-                        all_nodes.insert(NodeId { inner }, NodeData { ty });
-                    }
-                    Stmt::Node(_) => {
-                        bail!(span, "only nodes with bare idents are supported")
-                    }
-                    Stmt::Attr(_) | Stmt::Assign(_) | Stmt::Subgraph(_) => {
-                        bail!(span, "only node and edge statements are supported")
-                    }
-                    Stmt::Edge(StmtEdge {
-                        from,
-                        edges,
-                        attrs: _,
-                    }) => {
-                        let mut from = get_ident(from)?;
-                        for (directedness, to) in edges {
-                            let EdgeDirectedness::Directed { .. } = directedness else {
-                                bail!(directedness.span(), "only directed edges are supported")
-                            };
-                            let to = get_ident(to)?;
-                            for it in [&from, &to] {
-                                all_nodes
-                                    .entry(NodeId { inner: it.clone() })
-                                    .or_insert(NodeData { ty: None });
-                            }
-                            all_edges
-                                .insert((NodeId { inner: from }, NodeId { inner: to.clone() }));
-                            from = to;
-                        }
-                    }
-                }
-            }
-            return Ok(());
-
-            fn get_ident(input: EdgeTarget) -> syn::Result<Ident> {
-                let span = input.span();
-                match input {
-                    EdgeTarget::NodeId(DotNodeId {
-                        id: ID::AnyIdent(id),
-                        port: _,
-                    }) => Ok(id),
-                    _ => bail!(span, "only bare idents are supported here"),
-                }
-            }
-        }
-    }
-}
-
-#[cfg(never)]
-fn extract_ty(attrs: Option<Attrs>) -> syn::Result<Option<syn::Type>> {
-    let ty = attrs
-        .and_then(|attrs| {
-            attrs
-                .lists
-                .iter()
-                .flat_map(|it| it.assigns.iter())
-                .filter_map(
-                    |AttrAssign {
-                         left,
-                         eq_token: _,
-                         right,
-                         trailing: _,
-                     }| {
-                        match left {
-                            ID::AnyIdent(ident) if ident == "type" => Some(right),
-                            ID::AnyLit(syn::Lit::Str(lit)) if lit.value() == "type" => Some(right),
-                            _ => None,
-                        }
-                    },
-                )
-                .at_most_one()
-                .map_err(|mut too_many| {
-                    let final_straw = too_many.nth(2).unwrap();
-                    syn::Error::new_spanned(final_straw, "`type` may only be specified once")
-                })
-                .and_then(|rhs| match rhs {
-                    Some(id) => match id {
-                        ID::AnyIdent(ident) => {
-                            syn::parse_str::<syn::Type>(&ident.to_string()).map(Some)
-                        }
-                        ID::AnyLit(syn::Lit::Str(lit)) => syn::parse_str(&lit.value()).map(Some),
-                        _ => Err(syn::Error::new_spanned(id, "unsupported type argument")),
-                    },
-                    None => Ok(None),
-                })
-                .transpose()
-        })
-        .transpose()?;
-    Ok(ty)
 }

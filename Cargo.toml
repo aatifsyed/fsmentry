@@ -9,12 +9,12 @@ required-features = ["cli"]
 
 [features]
 default = ["cli"]
-cli = ["prettyplease", "clap"]
+cli = ["prettyplease", "clap", "anyhow"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow = { version = "1.0.75", optional = true }
 clap = { version = "4.4.6", features = ["derive"], optional = true }
 derive-quote-to-tokens = "0.1.0"
 derive-syn-parse = "0.1.5"
