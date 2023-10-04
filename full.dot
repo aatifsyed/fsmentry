@@ -8,14 +8,12 @@ digraph Example {
     Fountain;
     Stream;
     
-    BeautifulBridge -> Tombstone;
     BeautifulBridge -> UnmarkedGrave;
     
     Plank -> Tombstone;
-    Plank -> UnmarkedGrave;
     
-    Fountain -> BeautifulBridge;
-    Fountain -> Plank;
+    Fountain -> BeautifulBridge -> Tombstone;
+    Fountain -> Plank -> UnmarkedGrave;
     
     Stream -> BeautifulBridge;
     Stream -> Plank;
