@@ -1,11 +1,11 @@
-digraph {
-    PopulatedIsland [type = String;];
+digraph Example {
+    PopulatedIsland;
     DesertIsland;
-    BeautifulBridge [type = "Vec<u8>";];
+    BeautifulBridge;
     Plank;
-    Tombstone [type = char;];
+    Tombstone;
     UnmarkedGrave;
-    Fountain [type = "std::net::IpAddr";];
+    Fountain;
     Stream;
     
     BeautifulBridge -> Tombstone;

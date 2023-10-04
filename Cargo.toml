@@ -8,7 +8,7 @@ name = "fsmgen-cli"
 required-features = ["cli"]
 
 [features]
-default = ["cli"]
+default = []
 cli = ["prettyplease", "clap", "anyhow", "syn-miette", "miette"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

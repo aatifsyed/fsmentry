@@ -3,7 +3,7 @@ mod util;
 
 use heck::{ToSnakeCase as _, ToUpperCamelCase as _};
 use proc_macro2::{Ident, Span};
-use quote::quote;
+use quote::{quote, ToTokens};
 use std::{collections::HashMap, iter};
 use syn::{
     parse::ParseStream, parse_quote, punctuated::Punctuated, spanned::Spanned as _, token, Token,
@@ -461,7 +461,7 @@ macro_rules! bail_at {
 }
 
 impl FSMGenerator {
-    pub fn parse_dsl(input: ParseStream) -> syn::Result<Self> {
+    fn try_from_dsl(dsl: crate::dsl::Dsl) -> syn::Result<Self> {
         use dsl::{DocumentedArrow, Dsl, Edge, Stmt, StmtEdges, StmtNode};
         use std::{
             cmp::Ordering::{Equal, Greater, Less},
@@ -474,7 +474,7 @@ impl FSMGenerator {
             name,
             brace_token: _,
             mut stmts,
-        } = input.parse()?;
+        } = dsl;
 
         let mut nodes = HashMap::new();
         let mut edges = HashMap::new();
@@ -547,5 +547,115 @@ impl FSMGenerator {
             nodes,
             edges,
         })
+    }
+
+    pub fn parse_dsl(input: ParseStream) -> syn::Result<Self> {
+        Self::try_from_dsl(input.parse()?)
+    }
+
+    pub fn parse_dot(input: ParseStream) -> syn::Result<Self> {
+        use dsl::{
+            pun, Edge as DslEdge, Stmt as DslStmt, StmtEdges as DslStmtEdges,
+            StmtNode as DslStmtNode,
+        };
+        use syn_graphs::dot::{
+            EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId,
+            Stmt as DotStmt, StmtEdge as DotStmtEdge, StmtNode as DotStmtNode, ID,
+        };
+        let Graph {
+            strict: _,
+            directedness,
+            id,
+            brace_token,
+            stmt_list,
+        } = input.parse::<Graph>()?;
+        let GraphDirectedness::Digraph(_) = directedness else {
+            bail_at!(directedness.span(), "must be `digraph`")
+        };
+        let Some(ID::AnyIdent(id)) = id else {
+            bail_at!(directedness.span(), "graph must be named")
+        };
+        let mut stmts = vec![];
+        let span = Span::call_site();
+        for (stmt, _) in stmt_list.stmts {
+            match stmt {
+                DotStmt::Node(DotStmtNode {
+                    node_id: DotNodeId { id, port },
+                    attrs,
+                }) => {
+                    if let Some(attrs) = attrs {
+                        bail_at!(attrs.span(), "attrs are not supported")
+                    }
+                    if let Some(port) = port {
+                        bail_at!(port.span(), "ports are not supported")
+                    }
+                    let ID::AnyIdent(id) = id else {
+                        bail_at!(id.span(), "unsupported id")
+                    };
+                    stmts.push(DslStmt::Node(DslStmtNode {
+                        attrs: vec![],
+                        ident: syn::parse2(id.into_token_stream())?,
+                        colon: None,
+                        ty: None,
+                        semi: Token![;](span),
+                    }))
+                }
+                DotStmt::Edge(DotStmtEdge { from, edges, attrs }) => {
+                    if let Some(attrs) = attrs {
+                        bail_at!(attrs.span(), "attrs are not supported")
+                    };
+                    let mut rest = edges
+                        .into_iter()
+                        .map(|(dir, to)| {
+                            let EdgeDirectedness::Directed(_) = dir else {
+                                bail_at!(dir.span(), "edge must be directed")
+                            };
+                            Ok((
+                                DslEdge::Short(pun::ShortArrow(span)),
+                                edge_target_to_ident(to)?,
+                            ))
+                        })
+                        .collect::<syn::Result<Vec<_>>>()?;
+
+                    let (edge, to) = rest.remove(0);
+
+                    stmts.push(DslStmt::Edges(DslStmtEdges {
+                        attrs: vec![],
+                        from: edge_target_to_ident(from)?,
+                        edge,
+                        to,
+                        rest,
+                        semi: Token![;](span),
+                    }))
+                }
+                it @ (DotStmt::Attr(_) | DotStmt::Assign(_) | DotStmt::Subgraph(_)) => {
+                    bail_at!(it.span(), "unsupported statement")
+                }
+            }
+        }
+        return Self::try_from_dsl(crate::dsl::Dsl {
+            attrs: vec![],
+            vis: parse_quote!(pub),
+            name: syn::parse2(id.into_token_stream())?,
+            brace_token,
+            stmts,
+        });
+
+        fn edge_target_to_ident(edge_target: EdgeTarget) -> syn::Result<Ident> {
+            match edge_target {
+                EdgeTarget::Subgraph(_) => {
+                    bail_at!(edge_target.span(), "subgraphs are not supported")
+                }
+                EdgeTarget::NodeId(DotNodeId { id, port }) => {
+                    if let Some(port) = port {
+                        bail_at!(port.span(), "ports are not supported")
+                    }
+                    let ID::AnyIdent(id) = id else {
+                        bail_at!(id.span(), "only idents are allowed here")
+                    };
+                    syn::parse2(id.into_token_stream())
+                }
+            }
+        }
     }
 }

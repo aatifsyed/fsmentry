@@ -20,6 +20,9 @@ struct Args {
     /// Whether to shell out to `dot` to render an SVG to include in the diagram documentation.
     #[arg(long, name = "INCLUDE_SVG", default_value = "auto")]
     svg: IncludeSvg,
+    /// What language to interpret the input in.
+    #[arg(long, alias = "lang", default_value = "dsl")]
+    language: Language,
 }
 
 #[derive(ValueEnum, Clone)]
@@ -29,14 +32,28 @@ enum IncludeSvg {
     Auto,
 }
 
+#[derive(ValueEnum, Clone)]
+enum Language {
+    Dsl,
+    Dot,
+}
+
 fn main() -> anyhow::Result<()> {
-    let Args { file, svg } = Args::parse();
+    let Args {
+        file,
+        svg,
+        language,
+    } = Args::parse();
     let input = match file {
         Some(path) if path == Path::new("-") => get_stdin()?,
         Some(path) => std::fs::read_to_string(path).context("error reading file")?,
         None => get_stdin()?,
     };
-    let generator = match FSMGenerator::parse_dsl.parse_str(&input) {
+    let parser = match language {
+        Language::Dsl => FSMGenerator::parse_dsl,
+        Language::Dot => FSMGenerator::parse_dot,
+    };
+    let generator = match parser.parse_str(&input) {
         Ok(generator) => generator,
         Err(error) => {
             let mut s = String::new();
