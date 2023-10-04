@@ -9,7 +9,7 @@ required-features = ["cli"]
 
 [features]
 default = ["cli"]
-cli = ["prettyplease", "clap", "anyhow"]
+cli = ["prettyplease", "clap", "anyhow", "syn-miette", "miette"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,6 +20,9 @@ derive-quote-to-tokens = "0.1.0"
 derive-syn-parse = "0.1.5"
 heck = "0.4.1"
 itertools = "0.11.0"
+miette = { version = "5.10.0", features = [
+    "fancy-no-backtrace",
+], optional = true }
 prettyplease = { version = "0.2.15", optional = true }
 proc-macro2 = { version = "1.0.67", default-features = false }
 quote = { version = "1.0.33", default-features = false }
@@ -30,6 +33,7 @@ syn = { version = "2.0.37", default-features = false, features = [
     "clone-impls",
 ] }
 syn-graphs = { version = "0.1.0", path = "../syn-graphs" }
+syn-miette = { version = "0.1.0", optional = true }
 
 [dev-dependencies]
 derive-quickcheck-arbitrary = "0.1.3"

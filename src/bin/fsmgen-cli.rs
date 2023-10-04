@@ -7,6 +7,7 @@ use std::{
 use anyhow::{bail, Context as _};
 use clap::{Parser, ValueEnum};
 use fsmgen::FSMGenerator;
+use miette::GraphicalReportHandler;
 use quote::ToTokens as _;
 use syn::{parse::Parser as _, parse_quote};
 
@@ -35,7 +36,16 @@ fn main() -> anyhow::Result<()> {
         Some(path) => std::fs::read_to_string(path).context("error reading file")?,
         None => get_stdin()?,
     };
-    let generator = FSMGenerator::parse_dsl.parse_str(&input)?;
+    let generator = match FSMGenerator::parse_dsl.parse_str(&input) {
+        Ok(generator) => generator,
+        Err(error) => {
+            let mut s = String::new();
+            GraphicalReportHandler::new()
+                .render_report(&mut s, &syn_miette::Error::new(error, input))
+                .unwrap();
+            bail!("\n{}", s);
+        }
+    };
     let mut codegen = generator.codegen();
     let dot = generator.dot();
     let svg = match svg {
