@@ -231,20 +231,34 @@ dependencies = [
  "anyhow",
  "clap",
  "derive-quickcheck-arbitrary",
- "derive-quote-to-tokens",
- "derive-syn-parse",
- "heck",
- "itertools",
+ "fsmentry-core",
  "miette",
  "pretty_assertions",
  "prettyplease",
- "proc-macro2",
  "quickcheck",
  "quote",
  "syn 2.0.37",
  "syn-graphs",
  "syn-miette",
 ]
+
+[[package]]
+name = "fsmentry-core"
+version = "0.1.0"
+dependencies = [
+ "derive-quote-to-tokens",
+ "derive-syn-parse",
+ "heck",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.37",
+ "syn-graphs",
+]
+
+[[package]]
+name = "fsmentry-macros"
+version = "0.1.0"
 
 [[package]]
 name = "getrandom"

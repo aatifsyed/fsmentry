@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{bail, Context as _};
 use clap::{Parser, ValueEnum};
-use fsmgen::FSMGenerator;
+use fsmentry::FSMGenerator;
 use miette::GraphicalReportHandler;
 use quote::ToTokens as _;
 use syn::{parse::Parser as _, parse_quote};
