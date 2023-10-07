@@ -1,5 +1,3 @@
-Parse a state machine from dot:
-```rust,ignore
 /// This is documentation for the state machine.
 #[derive(Clone)] // these attributes will be passed to
                  // MyStateMachine and the State enum
@@ -16,4 +14,3 @@ pub MyStateMachine {
     ShavingYaks -> SweepingHair -"this is edge-specific documentation"-> Resting;
                         // implicit nodes will be created as appropriate ^
 }
-```

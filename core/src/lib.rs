@@ -1,4 +1,4 @@
-/// A code generator for state machines.
+/// A code generator for state machines with an entry API.
 ///
 /// See the `fsmentry` crate for more documentation.
 mod dsl;
@@ -37,7 +37,7 @@ fn ident(s: impl AsRef<str>) -> Ident {
     Ident::new(s.as_ref(), Span::call_site())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct NodeData {
     /// Stored as a single tuple member in the state enum.
     ty: Option<syn::Type>,
@@ -45,7 +45,7 @@ struct NodeData {
     docs: Vec<OuterDocString>,
 }
 
-/// Core code generator for state machines.
+/// A code generator for state machines with an entry API.
 ///
 /// The generator is created with a graph definition in either:
 /// - [The `DOT` graph description language](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29).
@@ -54,7 +54,7 @@ struct NodeData {
 ///   See [`Self::parse_dsl`].
 ///
 /// [`Self::codegen`] performs the actual generation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FSMGenerator {
     /// All are passed through to the state enum and the state machine struct.
     ///
@@ -76,7 +76,7 @@ impl FSMGenerator {
     /// The basic layout of the generated code is as follows:
     ///
     /// ```rust,ignore
-    /// pub mod <name> {
+    /// (pub) mod <name> {
     ///     // The actual state machine
     ///     pub struct <name> { .. }
     ///     // The possible states, including inner data
@@ -87,8 +87,6 @@ impl FSMGenerator {
     ///     // additional structs are generated to perform the actual state transitions
     /// }
     /// ```
-    ///
-    /// See the [module documentation](mod@self) for more.
     pub fn codegen(&self) -> syn::File {
         let state_machine_name = self.ident.UpperCamelCase();
         let state_enum_name = self.state_enum_name();
@@ -480,12 +478,18 @@ macro_rules! bail_at {
 }
 
 impl FSMGenerator {
-    #[doc = include_str!("../../common-docs/dsl.md")]
+    /// Parse a state machine from the following language:
+    /// ```rust,ignore
+    #[doc = include_str!("../../diagrams/doc.dsl")]
+    /// ```
     pub fn parse_dsl(input: ParseStream) -> syn::Result<Self> {
         Self::try_from_dsl(input.parse()?)
     }
 
-    #[doc = include_str!("../../common-docs/dot.md")]
+    /// Parse a state machine from the [`DOT` graph description language](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29):
+    /// ```text
+    #[doc = include_str!("../../diagrams/doc.dot")]
+    /// ```
     // Transpiles DOT to the DSL, and then calls [`Self::try_from_dsl`]
     pub fn parse_dot(input: ParseStream) -> syn::Result<Self> {
         use dsl::{
@@ -670,6 +674,10 @@ impl FSMGenerator {
                     }
                 }
             }
+        }
+
+        if nodes.is_empty() {
+            bail_at!(name.span(), "must have at least one state")
         }
 
         Ok(Self {

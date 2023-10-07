@@ -13,8 +13,9 @@ name = "fsmentry-cli"
 required-features = ["cli"]
 
 [features]
-default = ["macros"]
+default = ["macros", "std"]
 macros = ["fsmentry-macros"]
+std = ["fsmentry-core"]
 cli = [
     "prettyplease",
     "clap",
@@ -29,7 +30,7 @@ cli = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-fsmentry-core.workspace = true
+fsmentry-core = { workspace = true, optional = true }
 fsmentry-macros = { workspace = true, optional = true }
 
 anyhow = { version = "1.0.75", optional = true }
