@@ -1,5 +1,5 @@
-
 /// This is an example state machine.
+/// It exercises all vertex types, with and without data.
 /// 
 /// This documentation and derives will be on the top-level Example and ExampleState structs
 #[derive(Clone, derive_quickcheck_arbitrary::Arbitrary, Debug)]

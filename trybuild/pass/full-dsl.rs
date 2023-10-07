@@ -1,3 +1,6 @@
+use quickcheck::{Arbitrary as _, Gen, TestResult, Testable};
+
+use example::{Entry, Example};
 fsmentry::dsl! {
     /// This is an example state machine.
     ///
@@ -37,4 +40,62 @@ fsmentry::dsl! {
     }
 }
 
-fn main() {}
+fn main() {
+    quickcheck::quickcheck(RandomWalk)
+}
+
+struct RandomWalk;
+
+impl Testable for RandomWalk {
+    fn result(&self, g: &mut Gen) -> TestResult {
+        let mut machine = Example::arbitrary(g);
+        println!("initial state: {:?}", machine);
+        loop {
+            match machine.entry() {
+                Entry::DesertIsland => break,
+                Entry::Plank(it) => match CoinFlip::arbitrary(g) {
+                    Heads => it.tombstone('p'),
+                    Tails => it.unmarked_grave(),
+                },
+                Entry::UnmarkedGrave => break,
+                Entry::BeautifulBridge(it) => {
+                    let _current_data: &Vec<u8> = it.get();
+                    let _old_data: Vec<u8> = match CoinFlip::arbitrary(g) {
+                        Heads => it.tombstone('b'),
+                        Tails => it.unmarked_grave(),
+                    };
+                }
+                Entry::PopulatedIsland(data) => {
+                    let _: String = data;
+                    break;
+                }
+                Entry::Fountain(it) => {
+                    let _current_data: &std::net::IpAddr = it.get();
+                    let _old_data: std::net::IpAddr = match CoinFlip::arbitrary(g) {
+                        Heads => it.beautiful_bridge(Vec::from_iter(*b"from fountain")),
+                        Tails => it.plank(),
+                    };
+                }
+                Entry::Tombstone(data) => {
+                    let _: char = data;
+                    break;
+                }
+                Entry::Stream(it) => match CoinFlip::arbitrary(g) {
+                    Heads => it.beautiful_bridge(Vec::from_iter(*b"from stream")),
+                    Tails => it.plank(),
+                },
+            }
+            println!("\tnew state: {:?}", machine);
+        }
+        println!("final state: {:?}", machine);
+        TestResult::passed()
+    }
+}
+
+use CoinFlip::{Heads, Tails};
+
+#[derive(derive_quickcheck_arbitrary::Arbitrary, Clone)]
+enum CoinFlip {
+    Heads,
+    Tails,
+}

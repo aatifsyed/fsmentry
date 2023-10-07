@@ -1,3 +1,6 @@
+/// A code generator for state machines.
+///
+/// See the `fsmentry` crate for more documentation.
 mod dsl;
 mod util;
 
@@ -42,14 +45,15 @@ struct NodeData {
     docs: Vec<OuterDocString>,
 }
 
-/// Three main types are generated:
-/// - The state machine struct.
-///   This exposes the entry api, and persists state between transitions.
-/// - The state enum.
-///   This is the bare state, including any data that is stored in the state.
-/// - The entry enum.
-///   These contain the transition types, which progress the state machine.
-///   Additional types are generated for each transition.
+/// Core code generator for state machines.
+///
+/// The generator is created with a graph definition in either:
+/// - [The `DOT` graph description language](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29).
+///   See [`Self::parse_dot`].
+/// - A domain specific language.
+///   See [`Self::parse_dsl`].
+///
+/// [`Self::codegen`] performs the actual generation.
 #[derive(Debug)]
 pub struct FSMGenerator {
     /// All are passed through to the state enum and the state machine struct.
@@ -67,155 +71,24 @@ pub struct FSMGenerator {
 }
 
 impl FSMGenerator {
-    fn state_enum_name(&self) -> Ident {
-        ident("State")
-    }
-    fn entry_enum_name(&self) -> Ident {
-        ident("Entry")
-    }
-    fn transition_ty(&self, node_id: &NodeId) -> Ident {
-        ident(format!("{}Transition", node_id.inner.UpperCamelCase()))
-    }
-    fn getter_names(&self) -> (Ident, Ident) {
-        fn names(root: &str) -> impl Iterator<Item = (Ident, Ident)> + '_ {
-            (0..).map(move |n| {
-                let mut get = String::from(root);
-                let mut get_mut = format!("{}_mut", root);
-                for _ in 0..n {
-                    for s in [&mut get, &mut get_mut] {
-                        s.push('_')
-                    }
-                }
-
-                (ident(get), ident(get_mut))
-            })
-        }
-
-        for (get, get_mut) in itertools::interleave(names("get"), names("get_data")) {
-            if self.nodes.contains_key(&NodeId { inner: get.clone() }) {
-                continue;
-            }
-            if self.nodes.contains_key(&NodeId {
-                inner: get_mut.clone(),
-            }) {
-                continue;
-            }
-            return (get, get_mut);
-        }
-        unreachable!()
-    }
-    /// [`None`] if the node is a source
-    fn incoming(&self, to: &NodeId) -> Option<Vec<&NodeId>> {
-        let vec = self
-            .edges
-            .iter()
-            .filter_map(move |((src, dst), _)| match dst == to {
-                true => Some(src),
-                false => None,
-            })
-            .collect::<Vec<_>>();
-        match vec.is_empty() {
-            true => None,
-            false => Some(vec),
-        }
-    }
-    /// [`None`] if the node is a sink
-    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Option<Vec<(&NodeId, &[OuterDocString])>> {
-        let vec = self
-            .edges
-            .iter()
-            .filter_map(move |((src, dst), docs)| match src == from {
-                true => Some((dst, docs.as_slice())),
-                false => None,
-            })
-            .collect::<Vec<_>>();
-        match vec.is_empty() {
-            true => None,
-            false => Some(vec),
-        }
-    }
-    fn reachability_docs(&self, node: &NodeId) -> Option<Vec<OuterDocString>> {
-        let mut docs = vec![];
-        let span = Span::call_site();
-        if let Some(incoming) = self.incoming(node) {
-            docs.push(OuterDocString::new(
-                "This node is reachable from the following states:",
-                span,
-            ));
-            for each in incoming {
-                docs.push(OuterDocString::new(
-                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
-                    span,
-                ))
-            }
-        }
-        if let Some(outgoing) = self.outgoing(node) {
-            if !docs.is_empty() {
-                docs.push(OuterDocString::new("", span))
-            }
-            docs.push(OuterDocString::new(
-                "This node can reach the following states:",
-                span,
-            ));
-            for (each, _) in outgoing {
-                docs.push(OuterDocString::new(
-                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
-                    span,
-                ))
-            }
-        }
-        match docs.is_empty() {
-            true => None,
-            false => Some(docs),
-        }
-    }
-    /// Get a basic representation of this graph in dot
-    pub fn dot(&self) -> syn_graphs::dot::Graph {
-        use syn_graphs::dot::{
-            kw, pun, EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId,
-            Stmt, StmtEdge, StmtList, StmtNode, ID,
-        };
-        fn conv_node_id(NodeId { inner }: NodeId) -> DotNodeId {
-            DotNodeId {
-                id: ID::AnyIdent(inner),
-                port: None,
-            }
-        }
-
-        let span = Span::call_site();
-        let mut stmts = vec![];
-
-        for node_id in self.nodes.keys() {
-            stmts.push((
-                Stmt::Node(StmtNode {
-                    node_id: conv_node_id(node_id.clone()),
-                    attrs: None,
-                }),
-                Some(Token![;](span)),
-            ))
-        }
-        for (from, to) in self.edges.keys() {
-            stmts.push((
-                Stmt::Edge(StmtEdge {
-                    from: EdgeTarget::NodeId(conv_node_id(from.clone())),
-                    edges: vec![(
-                        EdgeDirectedness::Directed(pun::DirectedEdge(span)),
-                        EdgeTarget::NodeId(conv_node_id(to.clone())),
-                    )],
-                    attrs: None,
-                }),
-                Some(Token![;](span)),
-            ))
-        }
-
-        Graph {
-            strict: Some(kw::strict(span)),
-            directedness: GraphDirectedness::Digraph(kw::digraph(span)),
-            id: Some(ID::AnyIdent(self.ident.clone())),
-            brace_token: token::Brace(span),
-            stmt_list: StmtList { stmts },
-        }
-    }
+    /// Generates a state machine.
+    ///
+    /// The basic layout of the generated code is as follows:
+    ///
+    /// ```rust,ignore
+    /// pub mod <name> {
+    ///     // The actual state machine
+    ///     pub struct <name> { .. }
+    ///     // The possible states, including inner data
+    ///     pub enum State { .. }
+    ///     // The entry api, which gives you handles to transition the machine
+    ///     pub enum Entry { .. }
+    ///
+    ///     // additional structs are generated to perform the actual state transitions
+    /// }
+    /// ```
+    ///
+    /// See the [module documentation](mod@self) for more.
     pub fn codegen(&self) -> syn::File {
         let state_machine_name = self.ident.UpperCamelCase();
         let state_enum_name = self.state_enum_name();
@@ -449,6 +322,155 @@ impl FSMGenerator {
             }
         }
     }
+    /// Get a basic representation of this graph in dot, suitable for documenting the state machine.
+    pub fn dot(&self) -> syn_graphs::dot::Graph {
+        use syn_graphs::dot::{
+            kw, pun, EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId,
+            Stmt, StmtEdge, StmtList, StmtNode, ID,
+        };
+        fn conv_node_id(NodeId { inner }: NodeId) -> DotNodeId {
+            DotNodeId {
+                id: ID::AnyIdent(inner),
+                port: None,
+            }
+        }
+
+        let span = Span::call_site();
+        let mut stmts = vec![];
+
+        for node_id in self.nodes.keys() {
+            stmts.push((
+                Stmt::Node(StmtNode {
+                    node_id: conv_node_id(node_id.clone()),
+                    attrs: None,
+                }),
+                Some(Token![;](span)),
+            ))
+        }
+        for (from, to) in self.edges.keys() {
+            stmts.push((
+                Stmt::Edge(StmtEdge {
+                    from: EdgeTarget::NodeId(conv_node_id(from.clone())),
+                    edges: vec![(
+                        EdgeDirectedness::Directed(pun::DirectedEdge(span)),
+                        EdgeTarget::NodeId(conv_node_id(to.clone())),
+                    )],
+                    attrs: None,
+                }),
+                Some(Token![;](span)),
+            ))
+        }
+
+        Graph {
+            strict: Some(kw::strict(span)),
+            directedness: GraphDirectedness::Digraph(kw::digraph(span)),
+            id: Some(ID::AnyIdent(self.ident.clone())),
+            brace_token: token::Brace(span),
+            stmt_list: StmtList { stmts },
+        }
+    }
+    fn state_enum_name(&self) -> Ident {
+        ident("State")
+    }
+    fn entry_enum_name(&self) -> Ident {
+        ident("Entry")
+    }
+    fn transition_ty(&self, node_id: &NodeId) -> Ident {
+        ident(format!("{}", node_id.inner.UpperCamelCase()))
+    }
+    fn getter_names(&self) -> (Ident, Ident) {
+        fn names(root: &str) -> impl Iterator<Item = (Ident, Ident)> + '_ {
+            (0..).map(move |n| {
+                let mut get = String::from(root);
+                let mut get_mut = format!("{}_mut", root);
+                for _ in 0..n {
+                    for s in [&mut get, &mut get_mut] {
+                        s.push('_')
+                    }
+                }
+
+                (ident(get), ident(get_mut))
+            })
+        }
+
+        for (get, get_mut) in itertools::interleave(names("get"), names("get_data")) {
+            if self.nodes.contains_key(&NodeId { inner: get.clone() }) {
+                continue;
+            }
+            if self.nodes.contains_key(&NodeId {
+                inner: get_mut.clone(),
+            }) {
+                continue;
+            }
+            return (get, get_mut);
+        }
+        unreachable!()
+    }
+    /// [`None`] if the node is a source
+    fn incoming(&self, to: &NodeId) -> Option<Vec<&NodeId>> {
+        let vec = self
+            .edges
+            .iter()
+            .filter_map(move |((src, dst), _)| match dst == to {
+                true => Some(src),
+                false => None,
+            })
+            .collect::<Vec<_>>();
+        match vec.is_empty() {
+            true => None,
+            false => Some(vec),
+        }
+    }
+    /// [`None`] if the node is a sink
+    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Option<Vec<(&NodeId, &[OuterDocString])>> {
+        let vec = self
+            .edges
+            .iter()
+            .filter_map(move |((src, dst), docs)| match src == from {
+                true => Some((dst, docs.as_slice())),
+                false => None,
+            })
+            .collect::<Vec<_>>();
+        match vec.is_empty() {
+            true => None,
+            false => Some(vec),
+        }
+    }
+    fn reachability_docs(&self, node: &NodeId) -> Option<Vec<OuterDocString>> {
+        let mut docs = vec![];
+        let span = Span::call_site();
+        if let Some(incoming) = self.incoming(node) {
+            docs.push(OuterDocString::new(
+                "This node is reachable from the following states:",
+                span,
+            ));
+            for each in incoming {
+                docs.push(OuterDocString::new(
+                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
+                    span,
+                ))
+            }
+        }
+        if let Some(outgoing) = self.outgoing(node) {
+            if !docs.is_empty() {
+                docs.push(OuterDocString::new("", span))
+            }
+            docs.push(OuterDocString::new(
+                "This node can reach the following states:",
+                span,
+            ));
+            for (each, _) in outgoing {
+                docs.push(OuterDocString::new(
+                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
+                    span,
+                ))
+            }
+        }
+        match docs.is_empty() {
+            true => None,
+            false => Some(docs),
+        }
+    }
 }
 
 macro_rules! bail_at {
@@ -458,98 +480,13 @@ macro_rules! bail_at {
 }
 
 impl FSMGenerator {
-    fn try_from_dsl(dsl: crate::dsl::Dsl) -> syn::Result<Self> {
-        use dsl::{DocumentedArrow, Dsl, Edge, Stmt, StmtEdges, StmtNode};
-        use std::{
-            cmp::Ordering::{Equal, Greater, Less},
-            collections::hash_map::Entry::{Occupied, Vacant},
-        };
-
-        let Dsl {
-            attrs,
-            vis,
-            name,
-            brace_token: _,
-            mut stmts,
-        } = dsl;
-
-        let mut nodes = HashMap::new();
-        let mut edges = HashMap::new();
-
-        // Nodes first, so Node should be less than Edge
-        stmts.sort_unstable_by(|left, right| match (left, right) {
-            (Stmt::Edges(_), Stmt::Edges(_)) => Equal,
-            (Stmt::Edges(_), Stmt::Node(_)) => Greater,
-            (Stmt::Node(_), Stmt::Edges(_)) => Less,
-            (Stmt::Node(_), Stmt::Node(_)) => Equal,
-        });
-
-        for stmt in stmts {
-            match stmt {
-                Stmt::Node(StmtNode {
-                    attrs,
-                    ident,
-                    colon: _,
-                    ty,
-                    semi: _,
-                }) => {
-                    let span = ident.span();
-                    match nodes.entry(ident.into()) {
-                        Occupied(_) => bail_at!(span, "duplicate node definition"),
-                        Vacant(v) => v.insert(NodeData { ty, docs: attrs }),
-                    };
-                }
-                Stmt::Edges(StmtEdges {
-                    attrs,
-                    mut from,
-                    edge,
-                    to,
-                    rest,
-                    semi: _,
-                }) => {
-                    for ident in iter::once(&from)
-                        .chain([&to])
-                        .chain(rest.iter().map(|(_edge, ident)| ident))
-                    {
-                        nodes.entry(ident.clone().into()).or_insert(NodeData {
-                            ty: None,
-                            docs: vec![],
-                        });
-                    }
-                    for (edge, to) in iter::once((edge, to)).chain(rest) {
-                        match edges.entry((from.clone().into(), to.clone().into())) {
-                            Occupied(_) => bail_at!(edge.span(), "duplicate edge definition"),
-                            Vacant(v) => {
-                                let mut attrs = attrs.clone();
-                                if let Edge::Documented(DocumentedArrow { doc, .. }) = edge {
-                                    if !attrs.is_empty() {
-                                        // newline
-                                        attrs.push(OuterDocString::new("", doc.span()))
-                                    }
-                                    attrs.push(OuterDocString::new(doc.value(), doc.span()))
-                                }
-                                v.insert(attrs);
-                            }
-                        }
-                        from = to;
-                    }
-                }
-            }
-        }
-
-        Ok(Self {
-            attributes: attrs,
-            vis,
-            ident: name,
-            nodes,
-            edges,
-        })
-    }
-
+    #[doc = include_str!("../../common-docs/dsl.md")]
     pub fn parse_dsl(input: ParseStream) -> syn::Result<Self> {
         Self::try_from_dsl(input.parse()?)
     }
 
+    #[doc = include_str!("../../common-docs/dot.md")]
+    // Transpiles DOT to the DSL, and then calls [`Self::try_from_dsl`]
     pub fn parse_dot(input: ParseStream) -> syn::Result<Self> {
         use dsl::{
             pun, Edge as DslEdge, Stmt as DslStmt, StmtEdges as DslStmtEdges,
@@ -654,6 +591,94 @@ impl FSMGenerator {
                 }
             }
         }
+    }
+
+    fn try_from_dsl(dsl: crate::dsl::Dsl) -> syn::Result<Self> {
+        use dsl::{DocumentedArrow, Dsl, Edge, Stmt, StmtEdges, StmtNode};
+        use std::{
+            cmp::Ordering::{Equal, Greater, Less},
+            collections::hash_map::Entry::{Occupied, Vacant},
+        };
+
+        let Dsl {
+            attrs,
+            vis,
+            name,
+            brace_token: _,
+            mut stmts,
+        } = dsl;
+
+        let mut nodes = HashMap::new();
+        let mut edges = HashMap::new();
+
+        // Nodes first, so Node should be less than Edge
+        stmts.sort_unstable_by(|left, right| match (left, right) {
+            (Stmt::Edges(_), Stmt::Edges(_)) => Equal,
+            (Stmt::Edges(_), Stmt::Node(_)) => Greater,
+            (Stmt::Node(_), Stmt::Edges(_)) => Less,
+            (Stmt::Node(_), Stmt::Node(_)) => Equal,
+        });
+
+        for stmt in stmts {
+            match stmt {
+                Stmt::Node(StmtNode {
+                    attrs,
+                    ident,
+                    colon: _,
+                    ty,
+                    semi: _,
+                }) => {
+                    let span = ident.span();
+                    match nodes.entry(ident.into()) {
+                        Occupied(_) => bail_at!(span, "duplicate node definition"),
+                        Vacant(v) => v.insert(NodeData { ty, docs: attrs }),
+                    };
+                }
+                Stmt::Edges(StmtEdges {
+                    attrs,
+                    mut from,
+                    edge,
+                    to,
+                    rest,
+                    semi: _,
+                }) => {
+                    for ident in iter::once(&from)
+                        .chain([&to])
+                        .chain(rest.iter().map(|(_edge, ident)| ident))
+                    {
+                        nodes.entry(ident.clone().into()).or_insert(NodeData {
+                            ty: None,
+                            docs: vec![],
+                        });
+                    }
+                    for (edge, to) in iter::once((edge, to)).chain(rest) {
+                        match edges.entry((from.clone().into(), to.clone().into())) {
+                            Occupied(_) => bail_at!(edge.span(), "duplicate edge definition"),
+                            Vacant(v) => {
+                                let mut attrs = attrs.clone();
+                                if let Edge::Documented(DocumentedArrow { doc, .. }) = edge {
+                                    if !attrs.is_empty() {
+                                        // newline
+                                        attrs.push(OuterDocString::new("", doc.span()))
+                                    }
+                                    attrs.push(OuterDocString::new(doc.value(), doc.span()))
+                                }
+                                v.insert(attrs);
+                            }
+                        }
+                        from = to;
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
+            attributes: attrs,
+            vis,
+            ident: name,
+            nodes,
+            edges,
+        })
     }
 }
 

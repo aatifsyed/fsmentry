@@ -70,8 +70,8 @@ fn main() -> anyhow::Result<()> {
         IncludeSvg::Omit => None,
         IncludeSvg::Auto => get_svg(dot).ok(),
     };
-    let Some(syn::Item::Struct(syn::ItemStruct { attrs, .. })) = codegen.items.first_mut() else {
-        unreachable!("the struct is the first item generated")
+    let Some(syn::Item::Mod(syn::ItemMod { attrs, .. })) = codegen.items.first_mut() else {
+        unreachable!("the code generates a module")
     };
     if let Some(svg) = svg {
         let svg = format!("<div>{}</div>", svg);
