@@ -9,7 +9,7 @@ homepage.workspace = true
 readme.workspace = true
 
 [[bin]]
-name = "fsmentry-cli"
+name = "fsmentry"
 required-features = ["cli"]
 
 [features]

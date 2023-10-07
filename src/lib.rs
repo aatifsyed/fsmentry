@@ -1,9 +1,10 @@
-//! A generator for state machines with the following features:
+//! A code generator for state machines with the following features:
 //! - An `entry` api to transition the state machine.
 //! - Illegal states and transitions are unrepresentable.
 //! - States can contain data.
 //! - Custom `#[derive(..)]` support.
-//! - Visual representation of the state machine in docs.
+//! - `#![no_std]` support.
+//! - Inline SVG diagrams of the state machine in docs.
 //!
 //! ```
 //! // define the machine.
@@ -46,6 +47,46 @@
 //!         Entry::Amber(it) => break,
 //!     }
 //! }
+//! ```
+//!
+//! Here is more detailed information about the generated code.
+//! ```
+//! fsmentry::dsl! {
+//!     #[derive(Clone, Debug, derive_quickcheck_arbitrary::Arbitrary)]
+//! # pub MyStateMachine { DeadEnd; DeadEndWithData: String; WithTransitions -> DeadEnd; }
+//! # }
+//! # const _: &str = stringify! {
+//!     pub MyStateMachine { .. }
+//! # };
+//! # {
+//! }
+//! use my_state_machine::{MyStateMachine, State, Entry};
+//! // ^ A module with matching publicity is generated for the state machine.
+//! //   The `#[derive(..)]`s apply to the `State` and the `MyStateMachine` items.
+//!
+//! # fn _doc(g: &mut quickcheck::Gen) {
+//! # use quickcheck::Arbitrary as _;
+//! let mut machine = MyStateMachine::arbitrary(g);
+//!
+//! // you can also inspect and mutate the state yourself.
+//! let state: &State = machine.state();
+//! let state: &mut State = machine.state_mut();
+//!
+//! match machine.entry() {
+//!     // states with no transitions and no data are empty entries
+//!     Entry::DeadEnd => {},
+//!     // states with no transitions give you the data
+//!     Entry::DeadEndWithData(data) => {
+//!         let _: &mut String = data;
+//!     },
+//!     Entry::WithTransitions(handle) => {
+//!         // otherwise, you get a struct which allows you to transition the machine.
+//!         // (It will have getters for data as appropriate).
+//!         handle.dead_end();
+//!     }
+//!     // ...
+//! }
+//! # }
 //! ```
 
 #[cfg(feature = "std")]
