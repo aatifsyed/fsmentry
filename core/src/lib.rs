@@ -22,18 +22,11 @@ impl From<Ident> for NodeId {
 }
 
 impl NodeId {
-    #[allow(non_snake_case)]
-    pub fn UpperCamelCase(&self) -> Ident {
-        ident(self.inner.to_string().to_upper_camel_case().as_str())
-    }
-    pub fn snake_case(&self) -> Ident {
-        ident(self.inner.to_string().to_snake_case().as_str())
-    }
     pub fn transition_fn(&self) -> Ident {
-        self.snake_case()
+        self.inner.snake_case()
     }
     pub fn variant(&self) -> Ident {
-        self.UpperCamelCase()
+        self.inner.UpperCamelCase()
     }
 }
 
@@ -59,7 +52,9 @@ struct NodeData {
 ///   Additional types are generated for each transition.
 #[derive(Debug)]
 pub struct FSMGenerator {
-    /// These are passed through to the state enum and the state machine struct.
+    /// All are passed through to the state enum and the state machine struct.
+    ///
+    /// `#[doc]` attributes are passed through to the module
     attributes: Vec<syn::Attribute>,
     vis: syn::Visibility,
     ident: Ident,
@@ -72,21 +67,14 @@ pub struct FSMGenerator {
 }
 
 impl FSMGenerator {
-    fn state_machine_name(&self) -> &Ident {
-        &self.ident
-    }
     fn state_enum_name(&self) -> Ident {
-        ident(format!("{}State", self.state_machine_name()))
+        ident("State")
     }
     fn entry_enum_name(&self) -> Ident {
-        ident(format!("{}Entry", self.state_machine_name()))
+        ident("Entry")
     }
     fn transition_ty(&self, node_id: &NodeId) -> Ident {
-        ident(format!(
-            "{}{}Transition",
-            node_id.UpperCamelCase(),
-            self.state_machine_name()
-        ))
+        ident(format!("{}Transition", node_id.inner.UpperCamelCase()))
     }
     fn getter_names(&self) -> (Ident, Ident) {
         fn names(root: &str) -> impl Iterator<Item = (Ident, Ident)> + '_ {
@@ -131,6 +119,21 @@ impl FSMGenerator {
             false => Some(vec),
         }
     }
+    /// [`None`] if the node is a sink
+    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Option<Vec<(&NodeId, &[OuterDocString])>> {
+        let vec = self
+            .edges
+            .iter()
+            .filter_map(move |((src, dst), docs)| match src == from {
+                true => Some((dst, docs.as_slice())),
+                false => None,
+            })
+            .collect::<Vec<_>>();
+        match vec.is_empty() {
+            true => None,
+            false => Some(vec),
+        }
+    }
     fn reachability_docs(&self, node: &NodeId) -> Option<Vec<OuterDocString>> {
         let mut docs = vec![];
         let span = Span::call_site();
@@ -164,21 +167,6 @@ impl FSMGenerator {
         match docs.is_empty() {
             true => None,
             false => Some(docs),
-        }
-    }
-    /// [`None`] if the node is a sink
-    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Option<Vec<(&NodeId, &[OuterDocString])>> {
-        let vec = self
-            .edges
-            .iter()
-            .filter_map(move |((src, dst), docs)| match src == from {
-                true => Some((dst, docs.as_slice())),
-                false => None,
-            })
-            .collect::<Vec<_>>();
-        match vec.is_empty() {
-            true => None,
-            false => Some(vec),
         }
     }
     /// Get a basic representation of this graph in dot
@@ -229,8 +217,7 @@ impl FSMGenerator {
         }
     }
     pub fn codegen(&self) -> syn::File {
-        let vis = &self.vis;
-        let state_machine_name = self.state_machine_name();
+        let state_machine_name = self.ident.UpperCamelCase();
         let state_enum_name = self.state_enum_name();
         let entry_enum_name = self.entry_enum_name();
 
@@ -286,7 +273,7 @@ impl FSMGenerator {
                     entry_has_lifetime = true;
                     transition_tys.push(parse_quote!(
                         #(#node_docs)*
-                        #vis struct #transition_ty_name<'a> {
+                        pub struct #transition_ty_name<'a> {
                             inner: &'a mut #state_enum_name,
                         }
                     ));
@@ -385,7 +372,7 @@ impl FSMGenerator {
         let attrs = &self.attributes;
         let state_machine_struct: syn::ItemStruct = parse_quote! {
             #(#attrs)*
-            #vis struct #state_machine_name {
+            pub struct #state_machine_name {
                 state: #state_enum_name
             }
         };
@@ -415,7 +402,7 @@ impl FSMGenerator {
         let attrs = &self.attributes;
         let state_enum: syn::ItemEnum = parse_quote! {
             #(#attrs)*
-            #vis enum #state_enum_name {
+            pub enum #state_enum_name {
                 #state_variants
             }
         };
@@ -428,7 +415,7 @@ impl FSMGenerator {
             /// Access to the current state with valid transitions for the state machine.
             ///
             #[doc = #comment]
-            #vis enum #entry_enum_name #entry_enum_lifetime_param {
+            pub enum #entry_enum_name #entry_enum_lifetime_param {
                 #entry_variants
             }
         };
@@ -443,13 +430,23 @@ impl FSMGenerator {
             }
         }));
 
+        let vis = &self.vis;
+        let module_name = self.ident.snake_case();
+        let attrs = self
+            .attributes
+            .iter()
+            .filter(|it| it.path().is_ident("doc"));
+
         parse_quote! {
-            #state_machine_struct
-            #state_machine_methods
-            #state_enum
-            #entry_enum
-            #(#transition_tys)*
-            #(#transition_impls)*
+            #(#attrs)*
+            #vis mod #module_name {
+                #state_machine_struct
+                #state_machine_methods
+                #state_enum
+                #entry_enum
+                #(#transition_tys)*
+                #(#transition_impls)*
+            }
         }
     }
 }
@@ -657,5 +654,28 @@ impl FSMGenerator {
                 }
             }
         }
+    }
+}
+
+trait IdentExt {
+    fn get_ident(&self) -> &Ident;
+    #[allow(non_snake_case)]
+    fn UpperCamelCase(&self) -> Ident {
+        Ident::new(
+            &self.get_ident().to_string().to_upper_camel_case(),
+            self.get_ident().span(),
+        )
+    }
+    fn snake_case(&self) -> Ident {
+        Ident::new(
+            &self.get_ident().to_string().to_snake_case(),
+            self.get_ident().span(),
+        )
+    }
+}
+
+impl IdentExt for Ident {
+    fn get_ident(&self) -> &Ident {
+        self
     }
 }

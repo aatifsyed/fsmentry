@@ -3,10 +3,11 @@ fsmentry::dsl! {
         Red -> RedAmber -> Green -> Amber -> Red;
     }
 }
+use traffic_light::TrafficLight;
 
 fn cycle_traffic_light() {
-    let mut traffic_light = TrafficLight::new(TrafficLightState::Red);
-    use TrafficLightEntry as E;
+    let mut traffic_light = TrafficLight::new(traffic_light::State::Red);
+    use traffic_light::Entry as E;
     loop {
         match traffic_light.entry() {
             E::Red(it) => it.red_amber(),
