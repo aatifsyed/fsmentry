@@ -644,6 +644,8 @@ dependencies = [
 [[package]]
 name = "syn-graphs"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9d7c0496bee393c041c923b3d73781b6967c8bde2881fe2ea7aa5662be48a3a"
 dependencies = [
  "derive-quote-to-tokens",
  "derive-syn-parse",

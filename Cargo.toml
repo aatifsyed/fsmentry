@@ -74,7 +74,7 @@ description = "Finite State Machines with an entry API and data storage"
 syn = { version = "2.0.37", default-features = false }
 fsmentry-core = { path = "core" }
 fsmentry-macros = { path = "macros" }
-syn-graphs = { version = "0.1.0", path = "../syn-graphs" }
+syn-graphs = "0.1.0"
 quote = { version = "1.0.33", default-features = false }
 
 [package.metadata.docs.rs]
