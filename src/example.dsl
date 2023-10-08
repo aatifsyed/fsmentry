@@ -1,6 +1,6 @@
 /// This machine exercises all vertex types, with and without data.
 #[derive(Clone, Debug)]
-pub Example {
+pub ExampleMachine {
     /// An isolated vertex with associated data
     PopulatedIsland: String;
     /// An isolated vertex with no data
