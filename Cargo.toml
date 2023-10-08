@@ -72,8 +72,8 @@ description = "Finite State Machines with an entry API and data storage"
 
 [workspace.dependencies]
 syn = { version = "2.0.37", default-features = false }
-fsmentry-core = { path = "core" }
-fsmentry-macros = { path = "macros" }
+fsmentry-core = { version = "0.1.0", path = "core" }
+fsmentry-macros = { version = "0.1.0", path = "macros" }
 syn-graphs = "0.1.0"
 quote = { version = "1.0.33", default-features = false }
 

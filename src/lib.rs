@@ -105,7 +105,7 @@
 /// This is an example state machine that is only included on [`docs.rs`](https://docs.rs).
 /// It is generated from the following definition:
 /// ```rust,ignore
-#[doc = include_str!("../diagrams/full.dsl")]
+#[doc = include_str!("full.dsl")]
 /// ```
 #[cfg(docsrs)]
 pub mod example;
@@ -133,15 +133,9 @@ mod tests {
     }
 
     #[test]
-    fn examples() {
-        FSMGenerator::parse_dot
-            .parse_str(include_str!("../diagrams/doc.dot"))
-            .unwrap();
-        FSMGenerator::parse_dsl
-            .parse_str(include_str!("../diagrams/doc.dsl"))
-            .unwrap();
+    fn example() {
         let generator = FSMGenerator::parse_dsl
-            .parse_str(include_str!("../diagrams/full.dsl"))
+            .parse_str(include_str!("full.dsl"))
             .unwrap();
         let example = svg::attach(generator.codegen(), &generator);
         let expected = prettyplease::unparse(&example);

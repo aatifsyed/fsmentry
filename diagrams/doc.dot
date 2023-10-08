@@ -1,7 +1,0 @@
-digraph my_state_machine {
-    // declaring a node.
-    shaving_yaks;
-    
-    // declaring some edges, with implicit nodes.
-    shaving_yaks -> sweeping_hair -> resting;
-}
