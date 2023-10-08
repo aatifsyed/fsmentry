@@ -291,7 +291,7 @@ impl FSMGenerator {
             false => None,
             true => Some(quote!(<'a>)),
         };
-        let comment = format!("Created from [`{}::entry`].", state_machine_name);
+        let comment = format!("See [`{}::entry`].", state_machine_name);
         let entry_enum: syn::ItemEnum = parse_quote! {
             /// Access to the current state with valid transitions for the state machine.
             ///

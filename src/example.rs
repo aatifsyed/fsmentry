@@ -222,7 +222,7 @@ pub mod example_machine {
     }
     /// Access to the current state with valid transitions for the state machine.
     ///
-    ///Created from [`ExampleMachine::entry`].
+    ///See [`ExampleMachine::entry`].
     pub enum Entry<'a> {
         /// A vertex with nonzero indegree and outdegree, with associated data
         ///
