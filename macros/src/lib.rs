@@ -8,8 +8,11 @@ use syn::parse_macro_input;
 /// ```
 #[proc_macro]
 pub fn dsl(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let item = parse_macro_input!(item with FSMGenerator::parse_dsl);
-    item.codegen().into_token_stream().into()
+    let generator = parse_macro_input!(item with FSMGenerator::parse_dsl);
+    let codegen = generator.codegen();
+    #[cfg(feature = "svg")]
+    let codegen = svg::attach(codegen, &generator);
+    codegen.into_token_stream().into()
 }
 
 /// Generates a state machine from the [`DOT` graph description language](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29):
@@ -18,6 +21,12 @@ pub fn dsl(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// ```
 #[proc_macro]
 pub fn dot(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let item = parse_macro_input!(item with FSMGenerator::parse_dot);
-    item.codegen().into_token_stream().into()
+    let generator = parse_macro_input!(item with FSMGenerator::parse_dot);
+    let codegen = generator.codegen();
+    #[cfg(feature = "svg")]
+    let codegen = svg::attach(codegen, &generator);
+    codegen.into_token_stream().into()
 }
+
+#[cfg(feature = "svg")]
+mod svg;

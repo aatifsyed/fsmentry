@@ -1,4 +1,4 @@
-//! A code generator for state machines with the following features:
+//! A code generator for finite state machines with the following features:
 //! - An `entry` api to transition the state machine.
 //! - Illegal states and transitions are unrepresentable.
 //! - States can contain data.
@@ -49,7 +49,18 @@
 //! }
 //! ```
 //!
-//! Here is more detailed information about the generated code.
+//! # Features
+//! - `macros` (default): Include the [`dot`] and [`dsl`] macros.
+//! - `svg` (default): The macros will shell out to `dot`, if available, and
+//!   generate a diagram of the state machine for documentation.
+//! - `std` (default): Includes the [`FSMGenerator`], for custom codegen tools.
+//! - `cli`: This does not affect the library, but if you
+//!   ```console
+//!   cargo install fsmentry --features=cli
+//!   ```
+//!   You will get an `fsmentry` binary that you can use to generate code.
+//!
+//! Here are more details about the generated code.
 //! ```
 //! fsmentry::dsl! {
 //!     #[derive(Clone, Debug, derive_quickcheck_arbitrary::Arbitrary)]
@@ -89,6 +100,16 @@
 //! # }
 //! ```
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+/// This is an example state machine that is only included on [`docs.rs`](https://docs.rs).
+/// It is generated from the following definition:
+/// ```rust,ignore
+#[doc = include_str!("../diagrams/full.dsl")]
+/// ```
+#[cfg(docsrs)]
+pub mod example;
+
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
@@ -101,10 +122,34 @@ pub use fsmentry_macros::{dot, dsl};
 
 #[cfg(test)]
 mod tests {
+    use fsmentry_core::FSMGenerator;
+    use syn::parse::Parser as _;
+
     #[test]
     fn trybuild() {
         let t = trybuild::TestCases::new();
         t.pass("trybuild/pass/**/*.rs");
         t.compile_fail("trybuild/fail/**/*.rs")
+    }
+
+    #[test]
+    fn examples() {
+        FSMGenerator::parse_dot
+            .parse_str(include_str!("../diagrams/doc.dot"))
+            .unwrap();
+        FSMGenerator::parse_dsl
+            .parse_str(include_str!("../diagrams/doc.dsl"))
+            .unwrap();
+        let generator = FSMGenerator::parse_dsl
+            .parse_str(include_str!("../diagrams/full.dsl"))
+            .unwrap();
+        let example = svg::attach(generator.codegen(), &generator);
+        let expected = prettyplease::unparse(&example);
+        print!("{}", expected);
+        pretty_assertions::assert_str_eq!(expected, include_str!("example.rs"))
+    }
+
+    mod svg {
+        include!("../macros/src/svg.rs"); // I'm not writing this 3 times...
     }
 }

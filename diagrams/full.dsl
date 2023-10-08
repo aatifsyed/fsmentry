@@ -1,8 +1,5 @@
-/// This is an example state machine.
-/// It exercises all vertex types, with and without data.
-/// 
-/// This documentation and derives will be on the top-level Example and ExampleState structs
-#[derive(Clone, derive_quickcheck_arbitrary::Arbitrary, Debug)]
+/// This machine exercises all vertex types, with and without data.
+#[derive(Clone, Debug)]
 pub Example {
     /// An isolated vertex with associated data
     PopulatedIsland: String;
@@ -21,16 +18,15 @@ pub Example {
     /// A source with no data
     Stream;
     
-    /// An edge
     BeautifulBridge -> UnmarkedGrave;
 
-    Plank -"inline documentation"-> Tombstone;
+    Plank -"plank transitions to tombstone"-> Tombstone;
     
-    /// This documentation is shared among all transitions
+    /// This documentation is shared from `Fountain` to `BeautifulBridge` to `Tombstone`
     Fountain -> BeautifulBridge -> Tombstone;
 
-    /// This is also shared among all transitions
-    Fountain -"with inline too"-> Plank -> UnmarkedGrave;
+    /// This is also shared among a few transitions.
+    Fountain -"just on fountain to plank"-> Plank -> UnmarkedGrave;
     
     Stream --> BeautifulBridge;
     Stream --"different arrow lengths are ok"-> Plank;

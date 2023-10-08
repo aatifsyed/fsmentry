@@ -7,13 +7,13 @@ mod util;
 use heck::{ToSnakeCase as _, ToUpperCamelCase as _};
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
-use std::{collections::HashMap, iter};
+use std::{collections::BTreeMap, iter};
 use syn::{
     parse::ParseStream, parse_quote, punctuated::Punctuated, spanned::Spanned as _, token, Token,
 };
 use util::OuterDocString;
 
-#[derive(Hash, PartialEq, Eq, Debug, Clone)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone, PartialOrd, Ord)]
 struct NodeId {
     inner: Ident,
 }
@@ -63,11 +63,11 @@ pub struct FSMGenerator {
     vis: syn::Visibility,
     ident: Ident,
     /// All nodes must be in this map.
-    nodes: HashMap<NodeId, NodeData>,
+    nodes: BTreeMap<NodeId, NodeData>,
     /// Directed L -> R.
     ///
     /// Documentation is passed through to the transition functions
-    edges: HashMap<(NodeId, NodeId), Vec<OuterDocString>>,
+    edges: BTreeMap<(NodeId, NodeId), Vec<OuterDocString>>,
 }
 
 impl FSMGenerator {
@@ -601,7 +601,7 @@ impl FSMGenerator {
         use dsl::{DocumentedArrow, Dsl, Edge, Stmt, StmtEdges, StmtNode};
         use std::{
             cmp::Ordering::{Equal, Greater, Less},
-            collections::hash_map::Entry::{Occupied, Vacant},
+            collections::btree_map::Entry::{Occupied, Vacant},
         };
 
         let Dsl {
@@ -612,8 +612,8 @@ impl FSMGenerator {
             mut stmts,
         } = dsl;
 
-        let mut nodes = HashMap::new();
-        let mut edges = HashMap::new();
+        let mut nodes = BTreeMap::new();
+        let mut edges = BTreeMap::new();
 
         // Nodes first, so Node should be less than Edge
         stmts.sort_unstable_by(|left, right| match (left, right) {

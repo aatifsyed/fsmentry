@@ -66,7 +66,7 @@ impl Testable for RandomWalk {
                     };
                 }
                 Entry::PopulatedIsland(data) => {
-                    let _: String = data;
+                    let _: &mut String = data;
                     break;
                 }
                 Entry::Fountain(it) => {
@@ -77,7 +77,7 @@ impl Testable for RandomWalk {
                     };
                 }
                 Entry::Tombstone(data) => {
-                    let _: char = data;
+                    let _: &mut char = data;
                     break;
                 }
                 Entry::Stream(it) => match CoinFlip::arbitrary(g) {
