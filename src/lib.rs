@@ -174,7 +174,7 @@
 /// This is an example state machine that is only included on [`docs.rs`](https://docs.rs).
 /// It is generated from the following definition:
 /// ```rust,ignore
-#[doc = include_str!("full.dsl")]
+#[doc = include_str!("example.dsl")]
 /// ```
 #[cfg(docsrs)]
 pub mod example;
