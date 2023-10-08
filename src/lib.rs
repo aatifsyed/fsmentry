@@ -149,6 +149,19 @@ mod tests {
         pretty_assertions::assert_str_eq!(expected, include_str!("example.rs"))
     }
 
+    #[test]
+    fn readme() {
+        assert!(
+            std::process::Command::new("cargo")
+                .args(["rdme", "--check"])
+                .output()
+                .expect("couldn't run `cargo rdme`")
+                .status
+                .success(),
+            "README.md is out of date - bless the new version by running `cargo rdme`"
+        )
+    }
+
     mod svg {
         include!("../macros/src/svg.rs"); // I'm not writing this 3 times...
     }
