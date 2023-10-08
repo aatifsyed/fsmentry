@@ -122,8 +122,6 @@ pub use fsmentry_macros::{dot, dsl};
 
 #[cfg(test)]
 mod tests {
-    use fsmentry_core::FSMGenerator;
-    use syn::parse::Parser as _;
 
     #[test]
     fn trybuild() {
@@ -134,13 +132,13 @@ mod tests {
 
     #[test]
     fn example() {
-        let generator = FSMGenerator::parse_dsl
-            .parse_str(include_str!("full.dsl"))
-            .unwrap();
-        let example = svg::attach(generator.codegen(), &generator);
-        let expected = prettyplease::unparse(&example);
-        print!("{}", expected);
-        pretty_assertions::assert_str_eq!(expected, include_str!("example.rs"))
+        assert_cmd::Command::cargo_bin("fsmentry")
+            .unwrap()
+            .write_stdin(include_str!("full.dsl"))
+            .arg("--svg=force")
+            .assert()
+            .success()
+            .stdout(include_str!("example.rs"));
     }
 
     #[test]
@@ -154,9 +152,5 @@ mod tests {
                 .success(),
             "README.md is out of date - bless the new version by running `cargo rdme`"
         )
-    }
-
-    mod svg {
-        include!("../macros/src/svg.rs"); // I'm not writing this 3 times...
     }
 }

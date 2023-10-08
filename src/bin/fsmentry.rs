@@ -64,11 +64,10 @@ fn main() -> anyhow::Result<()> {
         }
     };
     let mut codegen = generator.codegen();
-    let dot = generator.dot();
     let svg = match svg {
-        IncludeSvg::Force => Some(get_svg(dot)?),
+        IncludeSvg::Force => Some(render_dot(&generator)?),
         IncludeSvg::Omit => None,
-        IncludeSvg::Auto => get_svg(dot).ok(),
+        IncludeSvg::Auto => render_dot(&generator).ok(),
     };
     let Some(syn::Item::Mod(syn::ItemMod { attrs, .. })) = codegen.items.first_mut() else {
         unreachable!("the code generates a module")
@@ -93,7 +92,7 @@ fn get_stdin() -> anyhow::Result<String> {
     Ok(s)
 }
 
-fn get_svg(dot: syn_graphs::dot::Graph) -> anyhow::Result<String> {
+fn render_dot(generator: &fsmentry_core::FSMGenerator) -> anyhow::Result<String> {
     let mut child = std::process::Command::new("dot")
         .arg("-Tsvg")
         .stdin(Stdio::piped())
@@ -105,7 +104,7 @@ fn get_svg(dot: syn_graphs::dot::Graph) -> anyhow::Result<String> {
         .stdin
         .take()
         .unwrap()
-        .write_all(dot.into_token_stream().to_string().as_bytes())
+        .write_all(generator.dot().into_token_stream().to_string().as_bytes())
         .context("couldn't pipe to `dot`")?;
     let output = child.wait_with_output().context("couldn't join `dot`")?;
     match output.status.code() {
