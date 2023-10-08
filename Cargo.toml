@@ -60,7 +60,7 @@ assert_cmd = "2.0.12"
 members = ["core", "macros"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 repository = "https://github.com/aatifsyed/fsmentry"
@@ -71,8 +71,8 @@ description = "Finite State Machines with an entry API and data storage"
 
 [workspace.dependencies]
 syn = { version = "2.0.37", default-features = false }
-fsmentry-core = { version = "0.1.1", path = "core" }
-fsmentry-macros = { version = "0.1.1", path = "macros" }
+fsmentry-core = { version = "0.1.2", path = "core" }
+fsmentry-macros = { version = "0.1.2", path = "macros" }
 syn-graphs = "0.1.0"
 quote = { version = "1.0.33", default-features = false }
 

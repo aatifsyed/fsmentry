@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "fsmentry"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "fsmentry-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "derive-quote-to-tokens",
  "derive-syn-parse",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "fsmentry-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fsmentry-core",
  "quote",
