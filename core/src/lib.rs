@@ -143,12 +143,21 @@ impl FSMGenerator {
                     // this node has transitions, so create a transition type
                     let transition_ty_name = self.transition_ty(node);
                     entry_has_lifetime = true;
-                    transition_tys.push(parse_quote!(
-                        #(#node_docs)*
-                        pub struct #transition_ty_name<'a> {
-                            inner: &'a mut #state_enum_name,
-                        }
-                    ));
+                    transition_tys.push({
+                        let method_docs = outgoing.iter().map(|(node, _)| {
+                            OuterDocString::new(
+                                format!("- [`{}::{}`]", transition_ty_name, node.transition_fn()),
+                                Span::call_site(),
+                            )
+                        });
+                        parse_quote!(
+                            /// Transition the state machine by calling the following methods:
+                            #(#method_docs)*
+                            pub struct #transition_ty_name<'a> {
+                                inner: &'a mut #state_enum_name,
+                            }
+                        )
+                    });
                     entry_variants.push(
                         parse_quote!(#(#node_docs)* #node_variant_name(#transition_ty_name<'a>)),
                     );

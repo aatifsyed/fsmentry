@@ -273,43 +273,27 @@ pub mod example {
         ///- [`State::Plank`]
         UnmarkedGrave,
     }
-    /// A vertex with nonzero indegree and outdegree, with associated data
-    ///
-    ///This node is reachable from the following states:
-    ///- [`State::Fountain`]
-    ///- [`State::Stream`]
-    ///
-    ///This node can reach the following states:
-    ///- [`State::Tombstone`]
-    ///- [`State::UnmarkedGrave`]
+    /// Transition the state machine by calling the following methods:
+    ///- [`BeautifulBridge::tombstone`]
+    ///- [`BeautifulBridge::unmarked_grave`]
     pub struct BeautifulBridge<'a> {
         inner: &'a mut State,
     }
-    /// A source with data
-    ///
-    ///This node can reach the following states:
-    ///- [`State::BeautifulBridge`]
-    ///- [`State::Plank`]
+    /// Transition the state machine by calling the following methods:
+    ///- [`Fountain::beautiful_bridge`]
+    ///- [`Fountain::plank`]
     pub struct Fountain<'a> {
         inner: &'a mut State,
     }
-    /// A vertex with nonzero indegree and outdegree, with no data
-    ///
-    ///This node is reachable from the following states:
-    ///- [`State::Fountain`]
-    ///- [`State::Stream`]
-    ///
-    ///This node can reach the following states:
-    ///- [`State::Tombstone`]
-    ///- [`State::UnmarkedGrave`]
+    /// Transition the state machine by calling the following methods:
+    ///- [`Plank::tombstone`]
+    ///- [`Plank::unmarked_grave`]
     pub struct Plank<'a> {
         inner: &'a mut State,
     }
-    /// A source with no data
-    ///
-    ///This node can reach the following states:
-    ///- [`State::BeautifulBridge`]
-    ///- [`State::Plank`]
+    /// Transition the state machine by calling the following methods:
+    ///- [`Stream::beautiful_bridge`]
+    ///- [`Stream::plank`]
     pub struct Stream<'a> {
         inner: &'a mut State,
     }
