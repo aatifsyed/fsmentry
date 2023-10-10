@@ -199,25 +199,31 @@ impl FSMGenerator {
                     for (outgoing, transition_docs) in outgoing {
                         let transition_fn_name = outgoing.transition_fn();
                         let outgoing_variant_name = outgoing.variant();
-                        let body: syn::ImplItemFn = match (node_data_ty, &self.nodes[outgoing].ty) {
+                        let methods: Vec<syn::ImplItemFn> = match (
+                            node_data_ty,
+                            &self.nodes[outgoing].ty,
+                        ) {
                             // no data -> no data
-                            (None, None) => parse_quote! {
+                            (None, None) => vec![parse_quote! {
+                                #(#transition_docs)*
                                 pub fn #transition_fn_name(self) {
                                     let prev =
                                     ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name);
                                     ::core::debug_assert!(::core::matches!(prev, #state_enum_name::#node_variant_name));
                                 }
-                            },
+                            }],
                             // no data -> data
-                            (None, Some(out)) => parse_quote! {
+                            (None, Some(out)) => vec![parse_quote! {
+                                #(#transition_docs)*
                                 pub fn #transition_fn_name(self, next: #out) {
                                     let prev =
                                     ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name(next));
                                     ::core::debug_assert!(::core::matches!(prev, #state_enum_name::#node_variant_name));
                                 }
-                            },
+                            }],
                             // data -> no data
-                            (Some(input), None) => parse_quote! {
+                            (Some(input), None) => vec![parse_quote! {
+                                #(#transition_docs)*
                                 pub fn #transition_fn_name(self) -> #input {
                                     let prev =
                                     ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name);
@@ -226,23 +232,22 @@ impl FSMGenerator {
                                         _ => ::core::unreachable!(#msg)
                                     }
                                 }
-                            },
+                            }],
                             // data -> data
-                            (Some(input), Some(out)) => parse_quote! {
-                                pub fn #transition_fn_name(self, next: #out) -> #input {
-                                    let prev =
-                                    ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name(next));
-                                    match prev {
-                                        #state_enum_name::#node_variant_name(data) => data,
-                                        _ => ::core::unreachable!(#msg)
-                                    }
+                            (Some(input), Some(out)) => vec![parse_quote! {
+                            #(#transition_docs)*
+                            pub fn #transition_fn_name(self, next: #out) -> #input {
+                                let prev =
+                                ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name(next));
+                                match prev {
+                                    #state_enum_name::#node_variant_name(data) => data,
+                                    _ => ::core::unreachable!(#msg)
                                 }
-                            },
+                            }}],
                         };
                         transition_impls.push(parse_quote!(
                             impl #transition_ty_name<'_> {
-                                #(#transition_docs)*
-                                #body
+                                #(#methods)*
                             }
                         ));
                     }
