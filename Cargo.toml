@@ -35,10 +35,8 @@ fsmentry-macros = { workspace = true, optional = true }
 
 anyhow = { version = "1.0.75", optional = true }
 clap = { version = "4.4.6", features = ["derive"], optional = true }
-syn-miette = { version = "0.1.0", optional = true }
-miette = { version = "5.10.0", features = [
-    "fancy-no-backtrace",
-], optional = true }
+syn-miette = { version = "0.3.0", optional = true }
+miette = { version = "7", features = ["fancy-no-backtrace"], optional = true }
 prettyplease = { version = "0.2.15", optional = true }
 syn = { workspace = true, optional = true }
 syn-graphs = { workspace = true, optional = true }
@@ -71,7 +69,7 @@ description = "Finite State Machines with an entry API and data storage"
 syn = { version = "2.0.37", default-features = false }
 fsmentry-core = { version = "0.1.2", path = "core" }
 fsmentry-macros = { version = "0.1.2", path = "macros" }
-syn-graphs = "0.1.0"
+syn-graphs = "0.2.0"
 quote = { version = "1.0.33", default-features = false }
 
 [package.metadata.docs.rs]
