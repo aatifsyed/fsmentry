@@ -15,21 +15,19 @@ required-features = ["cli"]
 
 [features]
 default = ["macros", "std", "svg"]
-macros = ["fsmentry-macros"]
-std = ["fsmentry-core"]
+macros = ["dep:fsmentry-macros"]
+std = ["dep:fsmentry-core"]
 svg = ["macros", "fsmentry-macros/svg"]
 cli = [
-    "prettyplease",
-    "clap",
-    "anyhow",
-    "syn-miette",
-    "miette",
-    "syn",
-    "syn-graphs",
-    "quote",
+    "dep:prettyplease",
+    "dep:clap",
+    "dep:anyhow",
+    "dep:syn-miette",
+    "dep:miette",
+    "dep:syn",
+    "dep:syn-graphs",
+    "dep:quote",
 ]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 fsmentry-core = { workspace = true, optional = true }
