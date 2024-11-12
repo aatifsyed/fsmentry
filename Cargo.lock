@@ -297,7 +297,7 @@ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
 name = "fsmentry"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "fsmentry-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "derive-quote-to-tokens",
  "derive-syn-parse 0.2.0",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "fsmentry-macros"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "fsmentry-core",
  "quote",
