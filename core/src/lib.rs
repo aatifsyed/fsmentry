@@ -3,39 +3,43 @@
 //! See the [`fsmentry` crate](https://docs.rs/fsmentry).
 
 mod dsl;
-mod util;
 
+use dsl::{DocAttr, Dsl, StateEnum};
 use heck::{ToSnakeCase as _, ToUpperCamelCase as _};
+use itertools::{Either, Itertools};
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
-use std::{collections::BTreeMap, iter};
+use std::{cmp::Ordering, collections::BTreeMap, iter, mem};
 use syn::{
-    parse::ParseStream, parse_quote, punctuated::Punctuated, spanned::Spanned as _, token, Token,
+    parse::ParseStream, parse_quote, punctuated::Punctuated, spanned::Spanned as _, token,
+    GenericParam, Lifetime, LifetimeParam, LitStr, Token, Visibility,
 };
-use util::OuterDocString;
 
 #[derive(Hash, PartialEq, Eq, Debug, Clone, PartialOrd, Ord)]
-struct NodeId {
-    inner: Ident,
-}
+struct NodeId(Ident);
 
 impl From<Ident> for NodeId {
     fn from(inner: Ident) -> Self {
-        Self { inner }
+        Self(inner)
     }
 }
 
 impl NodeId {
     pub fn transition_fn(&self) -> Ident {
-        self.inner.snake_case()
+        self.0.snake_case()
     }
     pub fn variant(&self) -> Ident {
-        self.inner.UpperCamelCase()
+        self.0.UpperCamelCase()
     }
 }
 
 fn ident(s: impl AsRef<str>) -> Ident {
     Ident::new(s.as_ref(), Span::call_site())
+}
+impl ToTokens for NodeId {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.0.to_tokens(tokens);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +47,7 @@ struct NodeData {
     /// Stored as a single tuple member in the state enum.
     ty: Option<syn::Type>,
     /// These are attached to each variant.
-    docs: Vec<OuterDocString>,
+    doc: Vec<DocAttr>,
 }
 
 /// A code generator for state machines with an entry API.
@@ -68,7 +72,7 @@ pub struct FSMGenerator {
     /// Directed L -> R.
     ///
     /// Documentation is passed through to the transition functions
-    edges: BTreeMap<(NodeId, NodeId), Vec<OuterDocString>>,
+    edges: BTreeMap<(NodeId, NodeId), Vec<DocAttr>>,
 }
 
 impl FSMGenerator {
@@ -103,7 +107,7 @@ impl FSMGenerator {
             node,
             NodeData {
                 ty: node_ty,
-                docs: node_docs,
+                doc: node_docs,
             },
         ) in self.nodes.iter()
         {
@@ -111,7 +115,7 @@ impl FSMGenerator {
             let mut node_docs = node_docs.clone();
             if let Some(reachability_docs) = self.reachability_docs(node) {
                 if !node_docs.is_empty() {
-                    node_docs.push(OuterDocString::new("", Span::call_site()))
+                    node_docs.push(DocAttr::empty())
                 }
                 node_docs.extend(reachability_docs)
             }
@@ -145,10 +149,10 @@ impl FSMGenerator {
                     entry_has_lifetime = true;
                     transition_tys.push({
                         let method_docs = outgoing.iter().map(|(node, _)| {
-                            OuterDocString::new(
-                                format!("- [`{}::{}`]", transition_ty_name, node.transition_fn()),
+                            DocAttr::new(LitStr::new(
+                                &format!("- [`{}::{}`]", transition_ty_name, node.transition_fn()),
                                 Span::call_site(),
-                            )
+                            ))
                         });
                         parse_quote!(
                             /// Transition the state machine by calling the following methods:
@@ -341,7 +345,7 @@ impl FSMGenerator {
             kw, pun, EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId,
             Stmt, StmtEdge, StmtList, StmtNode, ID,
         };
-        fn conv_node_id(NodeId { inner }: NodeId) -> DotNodeId {
+        fn conv_node_id(NodeId(inner): NodeId) -> DotNodeId {
             DotNodeId {
                 id: ID::AnyIdent(inner),
                 port: None,
@@ -389,7 +393,7 @@ impl FSMGenerator {
         ident("Entry")
     }
     fn transition_ty(&self, node_id: &NodeId) -> Ident {
-        ident(format!("{}", node_id.inner.UpperCamelCase()))
+        ident(format!("{}", node_id.0.UpperCamelCase()))
     }
     fn getter_names(&self) -> (Ident, Ident) {
         fn names(root: &str) -> impl Iterator<Item = (Ident, Ident)> + '_ {
@@ -407,12 +411,10 @@ impl FSMGenerator {
         }
 
         for (get, get_mut) in itertools::interleave(names("get"), names("get_data")) {
-            if self.nodes.contains_key(&NodeId { inner: get.clone() }) {
+            if self.nodes.contains_key(&NodeId(get.clone())) {
                 continue;
             }
-            if self.nodes.contains_key(&NodeId {
-                inner: get_mut.clone(),
-            }) {
+            if self.nodes.contains_key(&NodeId(get_mut.clone())) {
                 continue;
             }
             return (get, get_mut);
@@ -435,7 +437,7 @@ impl FSMGenerator {
         }
     }
     /// [`None`] if the node is a sink
-    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Option<Vec<(&NodeId, &[OuterDocString])>> {
+    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Option<Vec<(&NodeId, &[DocAttr])>> {
         let vec = self
             .edges
             .iter()
@@ -449,40 +451,41 @@ impl FSMGenerator {
             false => Some(vec),
         }
     }
-    fn reachability_docs(&self, node: &NodeId) -> Option<Vec<OuterDocString>> {
-        let mut docs = vec![];
-        let span = Span::call_site();
-        if let Some(incoming) = self.incoming(node) {
-            docs.push(OuterDocString::new(
-                "This node is reachable from the following states:",
-                span,
-            ));
-            for each in incoming {
-                docs.push(OuterDocString::new(
-                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
-                    span,
-                ))
-            }
-        }
-        if let Some(outgoing) = self.outgoing(node) {
-            if !docs.is_empty() {
-                docs.push(OuterDocString::new("", span))
-            }
-            docs.push(OuterDocString::new(
-                "This node can reach the following states:",
-                span,
-            ));
-            for (each, _) in outgoing {
-                docs.push(OuterDocString::new(
-                    format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
-                    span,
-                ))
-            }
-        }
-        match docs.is_empty() {
-            true => None,
-            false => Some(docs),
-        }
+    fn reachability_docs(&self, node: &NodeId) -> Option<Vec<DocAttr>> {
+        // let mut docs = vec![];
+        // let span = Span::call_site();
+        // if let Some(incoming) = self.incoming(node) {
+        //     docs.push(DocAttr::new(
+        //         "This node is reachable from the following states:",
+        //         span,
+        //     ));
+        //     for each in incoming {
+        //         docs.push(DocAttr::new(
+        //             &format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
+        //             span,
+        //         ))
+        //     }
+        // }
+        // if let Some(outgoing) = self.outgoing(node) {
+        //     if !docs.is_empty() {
+        //         docs.push(DocAttr::new("", span))
+        //     }
+        //     docs.push(DocAttr::new(
+        //         "This node can reach the following states:",
+        //         span,
+        //     ));
+        //     for (each, _) in outgoing {
+        //         docs.push(DocAttr::new(
+        //             &format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
+        //             span,
+        //         ))
+        //     }
+        // }
+        // match docs.is_empty() {
+        //     true => None,
+        //     false => Some(docs),
+        // }
+        todo!()
     }
 }
 
@@ -533,6 +536,7 @@ impl FSMGenerator {
     /// # }).unwrap();
     /// ```
     // Transpiles DOT to the DSL, and then calls [`Self::try_from_dsl`]
+    #[cfg(off)]
     pub fn parse_dot(input: ParseStream) -> syn::Result<Self> {
         use dsl::{
             pun, Edge as DslEdge, Stmt as DslStmt, StmtEdges as DslStmtEdges,
@@ -639,96 +643,202 @@ impl FSMGenerator {
         }
     }
 
-    fn try_from_dsl(dsl: crate::dsl::Dsl) -> syn::Result<Self> {
-        use dsl::{DocumentedArrow, Dsl, Edge, Stmt, StmtEdges, StmtNode};
-        use std::{
-            cmp::Ordering::{Equal, Greater, Less},
-            collections::btree_map::Entry::{Occupied, Vacant},
-        };
+    /// Turns the statements into a graph.
+    fn try_from_dsl(mut dsl: crate::dsl::Dsl) -> syn::Result<Self> {
+        todo!()
+    }
+}
 
-        let Dsl {
-            attrs,
-            vis,
-            name,
-            brace_token: _,
-            mut stmts,
-        } = dsl;
+fn generate(dsl: &Dsl<Graph>) {
+    let Dsl {
+        doc: mod_doc,
+        vis: mod_vis,
+        r#mod,
+        name: mod_name,
+        brace: mod_brace,
+        state:
+            StateEnum {
+                attrs: state_enum_attrs,
+                vis: state_enum_vis,
+                r#enum,
+                name: state_enum_name,
+                generics: state_enum_generics,
+                brace: state_enum_brace,
+                dfn: graph,
+            },
+    } = dsl;
 
-        let mut nodes = BTreeMap::new();
-        let mut edges = BTreeMap::new();
+    let unreachable = quote!(::core::unreachable);
+    #[allow(non_snake_case)]
+    let AsRef = quote!(::core::convert::AsRef);
+    #[allow(non_snake_case)]
+    let AsMut = quote!(::core::convert::AsMut);
+    #[allow(non_snake_case)]
+    let Borrow = quote!(::core::borrow::Borrow);
+    #[allow(non_snake_case)]
+    let BorrowMut = quote!(::core::borrow::BorrowMut);
 
-        // Nodes first, so Node should be less than Edge
-        stmts.sort_unstable_by(|left, right| match (left, right) {
-            (Stmt::Edges(_), Stmt::Edges(_)) => Equal,
-            (Stmt::Edges(_), Stmt::Node(_)) => Greater,
-            (Stmt::Node(_), Stmt::Edges(_)) => Less,
-            (Stmt::Node(_), Stmt::Node(_)) => Equal,
+    let entry_enum_name = Ident::new(&format!("{state_enum_name}Entry"), Span::call_site());
+    let lt: Lifetime = parse_quote!('state);
+
+    let mut state_variants: Vec<syn::Variant> = vec![];
+    let mut entry_variants: Vec<syn::Variant> = vec![];
+    let mut entry_structs: Vec<syn::ItemStruct> = vec![];
+    let mut entry_ctor: Vec<syn::Arm> = vec![];
+
+    let mut entry_has_lifetime = false;
+    let entry_generics = {
+        let mut it = state_enum_generics.clone();
+        it.params
+            .insert(0, GenericParam::Lifetime(LifetimeParam::new(lt.clone())));
+        it
+    };
+    let (_, entry_ty_generics, _) = entry_generics.split_for_impl();
+
+    let (_, ty_generics, _) = state_enum_generics.split_for_impl();
+    for (node, NodeData { ty, doc }) in &graph.nodes {
+        state_variants.push(match ty {
+            Some(ty) => parse_quote!(#(#doc)* #node: #ty),
+            None => parse_quote!(#(#doc)* #node),
         });
+        let outgoing = graph.outgoing(node);
 
-        for stmt in stmts {
-            match stmt {
-                Stmt::Node(StmtNode {
-                    attrs,
-                    ident,
-                    colon: _,
-                    ty,
-                    semi: _,
-                }) => {
-                    let span = ident.span();
-                    match nodes.entry(ident.into()) {
-                        Occupied(_) => bail_at!(span, "duplicate node definition"),
-                        Vacant(v) => v.insert(NodeData { ty, docs: attrs }),
-                    };
-                }
-                Stmt::Edges(StmtEdges {
-                    attrs,
-                    mut from,
-                    edge,
-                    to,
-                    rest,
-                    semi: _,
-                }) => {
-                    for ident in iter::once(&from)
-                        .chain([&to])
-                        .chain(rest.iter().map(|(_edge, ident)| ident))
-                    {
-                        nodes.entry(ident.clone().into()).or_insert(NodeData {
-                            ty: None,
-                            docs: vec![],
-                        });
-                    }
-                    for (edge, to) in iter::once((edge, to)).chain(rest) {
-                        match edges.entry((from.clone().into(), to.clone().into())) {
-                            Occupied(_) => bail_at!(edge.span(), "duplicate edge definition"),
-                            Vacant(v) => {
-                                let mut attrs = attrs.clone();
-                                if let Edge::Documented(DocumentedArrow { doc, .. }) = edge {
-                                    if !attrs.is_empty() {
-                                        // newline
-                                        attrs.push(OuterDocString::new("", doc.span()))
-                                    }
-                                    attrs.push(OuterDocString::new(doc.value(), doc.span()))
-                                }
-                                v.insert(attrs);
-                            }
-                        }
-                        from = to;
-                    }
-                }
+        match (ty, outgoing.is_empty()) {
+            (None, true) => {
+                // no data, no transitions
+                state_variants.push(parse_quote!(#node));
+                entry_variants.push(parse_quote!(#node));
+                entry_ctor.push(parse_quote!(#state_enum_name::#node => #entry_enum_name::#node));
+            }
+            (Some(ty), true) => {
+                // data, no transitions
+                entry_has_lifetime = true;
+                state_variants.push(parse_quote!(#node(#ty)));
+                entry_variants.push(parse_quote!(#node(&#lt mut #ty)));
+                entry_ctor.push(parse_quote!(#state_enum_name::#node(it) => #entry_enum_name(it)));
+            }
+            (None, false) => {
+                // no data, transitions
+                entry_has_lifetime = true;
+            }
+            (Some(_), false) => {
+                // data, transitions
+                entry_has_lifetime = true;
             }
         }
+    }
+    todo!()
+}
 
-        if nodes.is_empty() {
-            bail_at!(name.span(), "must have at least one state")
+/// This is the last fallible step.
+fn statements2graph(mut dsl: Dsl) -> syn::Result<Dsl<Graph>> {
+    use dsl::*;
+    use std::collections::btree_map::Entry::{Occupied, Vacant};
+
+    let mut nodes = BTreeMap::<NodeId, NodeData>::new();
+    let mut edges = BTreeMap::<(NodeId, NodeId), Vec<DocAttr>>::new();
+
+    let stmts = mem::take(&mut dsl.state.dfn);
+
+    // define all the nodes in a separate traversal
+    // so that transition definitions may include types, at any location
+    for (Node { name, ty }, docs) in stmts.iter().flat_map(|it| match it {
+        Statement::Node { node, doc } => Either::Left(iter::once((node, &**doc))),
+        Statement::Transition { first, rest, .. } => Either::Right(
+            iter::once(first)
+                .chain(rest.iter().map(|(_, it)| it))
+                .map(|it| (it, &[][..])),
+        ),
+    }) {
+        let ty = ty.as_ref().map(|(_, it)| it);
+        match nodes.entry(name.clone().into()) {
+            Occupied(mut occ) => {
+                occ.get_mut().doc.extend_from_slice(docs);
+                match (&occ.get().ty, ty) {
+                    (None, Some(_)) | (Some(_), None) | (None, None) => {}
+                    (Some(l), Some(r)) if l == r => {}
+                    (Some(_), Some(_)) => bail_at!(name.span(), "incompatible redefinition"),
+                }
+            }
+            Vacant(v) => {
+                v.insert(NodeData {
+                    ty: ty.cloned(),
+                    doc: docs.to_owned(),
+                });
+            }
+        };
+    }
+
+    for stmt in stmts {
+        let Statement::Transition {
+            doc: shared_doc,
+            first,
+            rest,
+        } = stmt
+        else {
+            continue; // handled above
+        };
+
+        let mut from = first.name;
+
+        for (arrow, Node { name: to, ty: _ }) in rest {
+            match edges.entry((from.clone().into(), to.clone().into())) {
+                Occupied(_) => bail_at!(arrow.span(), "duplicate edge definition"),
+                Vacant(v) => {
+                    v.insert(match arrow {
+                        Arrow::Plain(..) => shared_doc.clone(),
+                        Arrow::Doc { doc: this_doc, .. } => {
+                            let mut doc = shared_doc.clone();
+                            if !doc.is_empty() {
+                                doc.push(DocAttr::empty());
+                            }
+                            doc.push(DocAttr::new(this_doc));
+                            doc
+                        }
+                    });
+                }
+            }
+            from = to;
         }
+    }
 
-        Ok(Self {
-            attributes: attrs,
-            vis,
-            ident: name,
-            nodes,
-            edges,
-        })
+    if nodes.is_empty() {
+        bail_at!(dsl.state.name.span(), "must have at least one state")
+    }
+
+    if matches!(dsl.state.vis, Visibility::Inherited) {
+        dsl.state.vis = parse_quote!(pub(super));
+    }
+
+    Ok(dsl.map(|_| Graph { nodes, edges }))
+}
+
+/// Don't want to take a dependency on petgraph
+///
+/// Our graphs are small enough that we don't need to optimise
+struct Graph {
+    /// All nodes referenced in `edges` are here.
+    nodes: BTreeMap<NodeId, NodeData>,
+    /// Directed L -> R.
+    edges: BTreeMap<(NodeId, NodeId), Vec<DocAttr>>,
+}
+
+impl Graph {
+    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Vec<(&'a NodeId, &'a NodeData, &'a [DocAttr])> {
+        self.edges
+            .iter()
+            .filter_map(move |((it, to), doc)| {
+                (it == from).then_some((to, &self.nodes[to], &**doc))
+            })
+            .collect()
+    }
+    fn incoming<'a>(&'a self, to: &'a NodeId) -> Vec<(&'a NodeId, &'a NodeData, &'a [DocAttr])> {
+        self.edges
+            .iter()
+            .filter_map(move |((from, it), doc)| {
+                (it == from).then_some((to, &self.nodes[to], &**doc))
+            })
+            .collect()
     }
 }
 

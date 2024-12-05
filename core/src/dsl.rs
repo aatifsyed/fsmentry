@@ -1,163 +1,252 @@
-use derive_syn_parse::Parse;
-use proc_macro2::Ident;
+use proc_macro2::Span;
+use quote::ToTokens;
 use syn::{
-    braced,
+    braced, bracketed, custom_keyword, parenthesized,
     parse::{Parse, ParseStream},
-    token, Attribute, LitStr, Token, Type, Visibility,
+    punctuated::Punctuated,
+    token, Attribute, Generics, Ident, LitStr, Token, Type, Visibility,
 };
 
-use crate::util::OuterDocString;
-
-pub mod pun {
-    // `-->` cannot be custom punctuation because the first Minus token is Alone
-    syn::custom_punctuation!(ShortArrow, ->);
-}
-
-#[test]
-fn parse_dsl() {
-    let dsl: Dsl = syn::parse_quote! {
-        /// These are state machine docs
-        /// There will be a nice diagram here too
-        ///
-        /// The state machine struct and state enum will both implement Debug now
-        #[derive(Debug)]
-        pub TrafficLight {
-            /// a node description
-            Foo;
-            /// This node has data associated with it
-            Bar: String;
-
-            /// an edge
-            Foo -> Bar;
-
-            /// many edges
-            Foo --> Bar -> Baz; // the arrow length doesn't mean anything
-
-            Foo -"with inline docs"-> Bar;
-
-            /// This documentation is shared among the edges
-            And -"some"-> Inline -"documentation"-> Too;
-        }
-    };
-    dbg!(dsl);
-}
-
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-pub struct Dsl {
-    pub attrs: Vec<Attribute>,
+pub struct Dsl<T = Punctuated<Statement, Token![,]>> {
+    pub doc: Vec<DocAttr>,
     pub vis: Visibility,
+    pub r#mod: Token![mod],
     pub name: Ident,
-    pub brace_token: token::Brace,
-    pub stmts: Vec<Stmt>,
+    pub brace: token::Brace,
+    pub state: StateEnum<T>,
+}
+
+impl<T> Dsl<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Dsl<U> {
+        let Self {
+            doc,
+            vis,
+            r#mod,
+            name,
+            brace,
+            state,
+        } = self;
+        Dsl {
+            doc,
+            vis,
+            r#mod,
+            name,
+            brace,
+            state: state.map(f),
+        }
+    }
 }
 
 impl Parse for Dsl {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let content;
         Ok(Self {
-            attrs: input.call(Attribute::parse_outer)?,
+            doc: parse_docs(input)?,
             vis: input.parse()?,
+            r#mod: input.parse()?,
             name: input.parse()?,
-            brace_token: braced!(content in input),
-            stmts: {
-                let mut stmts = vec![];
-                while !content.is_empty() {
-                    stmts.push(content.parse()?)
-                }
-                stmts
+            brace: braced!(content in input),
+            state: content.parse()?,
+        })
+    }
+}
+
+pub struct StateEnum<T = Punctuated<Statement, Token![,]>> {
+    pub attrs: Vec<Attribute>,
+    pub vis: Visibility,
+    pub r#enum: Token![enum],
+    pub name: Ident,
+    pub generics: Generics,
+    pub brace: token::Brace,
+    pub dfn: T,
+}
+
+impl<T> StateEnum<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> StateEnum<U> {
+        let Self {
+            attrs,
+            vis,
+            r#enum,
+            name,
+            generics,
+            brace,
+            dfn,
+        } = self;
+        StateEnum {
+            attrs,
+            vis,
+            r#enum,
+            name,
+            generics,
+            brace,
+            dfn: f(dfn),
+        }
+    }
+}
+
+impl Parse for StateEnum {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            attrs: Attribute::parse_outer(input)?,
+            vis: input.parse()?,
+            r#enum: input.parse()?,
+            name: input.parse()?,
+            generics: {
+                let mut it = input.parse::<Generics>()?;
+                it.where_clause = input.parse()?;
+                it
+            },
+            brace: braced!(content in input),
+            dfn: Punctuated::parse_terminated(&content)?,
+        })
+    }
+}
+pub enum Statement {
+    Node {
+        doc: Vec<DocAttr>,
+        node: Node,
+    },
+    Transition {
+        doc: Vec<DocAttr>,
+        first: Node,
+        rest: Vec<(Arrow, Node)>,
+    },
+}
+
+impl Parse for Statement {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let doc = parse_docs(input)?;
+        let node = input.parse()?;
+        let mut rest = vec![];
+        while input.peek(Token![-]) {
+            rest.push((input.parse()?, input.parse()?))
+        }
+        Ok(match rest.is_empty() {
+            true => Self::Node { doc, node },
+            false => Self::Transition {
+                doc,
+                first: node,
+                rest,
             },
         })
     }
 }
 
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-#[allow(clippy::large_enum_variant)]
-pub enum Stmt {
-    Edges(StmtEdges),
-    Node(StmtNode),
+pub struct Node {
+    pub name: Ident,
+    pub ty: Option<(token::Paren, Type)>,
 }
 
-impl Parse for Stmt {
+impl Parse for Node {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        // bounded fork
-        if input.fork().parse::<StmtNode>().is_ok() {
-            return Ok(Self::Node(input.parse()?));
+        Ok(Self {
+            name: input.parse()?,
+            ty: match input.peek(token::Paren) {
+                true => {
+                    let content;
+                    Some((parenthesized!(content in input), content.parse()?))
+                }
+                false => None,
+            },
+        })
+    }
+}
+pub enum Arrow {
+    Plain(Token![->]),
+    Doc {
+        start: Token![-],
+        doc: LitStr,
+        end: Token![->],
+    },
+}
+impl Parse for Arrow {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(Token![->]) {
+            return Ok(Self::Plain(input.parse()?));
         }
-        Ok(Self::Edges(input.parse()?))
+        Ok(Self::Doc {
+            start: input.parse()?,
+            doc: input.parse()?,
+            end: input.parse()?,
+        })
     }
 }
 
-#[derive(Parse)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-pub struct StmtEdges {
-    #[call(OuterDocString::parse_many)]
-    pub attrs: Vec<OuterDocString>,
-    pub from: Ident,
-    pub edge: Edge,
-    pub to: Ident,
-    #[call(Self::parse_rest)]
-    pub rest: Vec<(Edge, Ident)>,
-    pub semi: Token![;],
-}
-
-impl StmtEdges {
-    fn parse_rest(input: ParseStream) -> syn::Result<Vec<(Edge, Ident)>> {
-        let mut rest = vec![];
-        while !input.peek(Token![;]) {
-            rest.push((input.parse()?, input.parse()?))
+impl ToTokens for Arrow {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            Arrow::Plain(rarrow) => rarrow.to_tokens(tokens),
+            Arrow::Doc { start, doc, end } => {
+                start.to_tokens(tokens);
+                doc.to_tokens(tokens);
+                end.to_tokens(tokens);
+            }
         }
-        Ok(rest)
     }
 }
 
-#[derive(Parse)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-pub struct StmtNode {
-    #[call(OuterDocString::parse_many)]
-    pub attrs: Vec<OuterDocString>,
-    pub ident: Ident,
-    pub colon: Option<Token![:]>,
-    #[parse_if(colon.is_some())]
-    pub ty: Option<Type>,
-    pub semi: Token![;],
+custom_keyword!(doc);
+
+#[derive(Debug, Clone)]
+pub struct DocAttr {
+    pub pound: Token![#],
+    pub bracket: token::Bracket,
+    pub doc: doc,
+    pub eq: Token![=],
+    pub str: LitStr,
+}
+impl DocAttr {
+    pub fn new(lit: LitStr) -> Self {
+        let span = lit.span();
+        Self {
+            pound: Token![#](span),
+            bracket: token::Bracket(span),
+            doc: doc(span),
+            eq: Token![=](span),
+            str: lit,
+        }
+    }
+    pub fn empty() -> Self {
+        Self::new(LitStr::new("", Span::call_site()))
+    }
 }
 
-#[derive(Parse, derive_quote_to_tokens::ToTokens)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-pub enum Edge {
-    #[peek(pun::ShortArrow, name = "->")]
-    Short(pun::ShortArrow),
-    #[peek_with(minus_then_arrow, name = "-->")]
-    Long(Token![-], pun::ShortArrow),
-    #[peek(Token![-], name = r#"-"..."->"#)]
-    Documented(DocumentedArrow),
+impl Parse for DocAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            pound: input.parse()?,
+            bracket: bracketed!(content in input),
+            doc: content.parse()?,
+            eq: content.parse()?,
+            str: content.parse()?,
+        })
+    }
 }
 
-fn minus_then_arrow(input: ParseStream) -> bool {
-    input.peek(Token![-]) && input.peek2(pun::ShortArrow)
+impl ToTokens for DocAttr {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        let Self {
+            pound,
+            bracket,
+            doc,
+            eq,
+            str,
+        } = self;
+        pound.to_tokens(tokens);
+        bracket.surround(tokens, |tokens| {
+            doc.to_tokens(tokens);
+            eq.to_tokens(tokens);
+            str.to_tokens(tokens);
+        });
+    }
 }
 
-#[derive(Parse, derive_quote_to_tokens::ToTokens)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-pub struct DocumentedArrow {
-    pub minus: Token![-],
-    pub minus2: Option<Token![-]>,
-    pub doc: LitStr,
-    #[peek_with(not_short_arrow)]
-    pub minus3: Option<Token![-]>,
-    pub arrow: pun::ShortArrow,
-}
-
-fn not_short_arrow(input: ParseStream) -> bool {
-    !input.peek(pun::ShortArrow)
-}
-
-#[test]
-fn parse_arrow() {
-    assert!(matches!(syn::parse_quote!(->), Edge::Short(_)));
-    assert!(matches!(syn::parse_quote!(-->), Edge::Long(..)));
-    assert!(matches!(syn::parse_quote!(-"hello"->), Edge::Documented(_)));
-    assert!(matches!(syn::parse_quote!(--"ehlo"->), Edge::Documented(_)));
-    assert!(matches!(syn::parse_quote!(-"ehlo"-->), Edge::Documented(_)));
-    assert!(matches!(syn::parse_quote!(--"elo"-->), Edge::Documented(_)));
+fn parse_docs(input: ParseStream) -> syn::Result<Vec<DocAttr>> {
+    let mut parsed = vec![];
+    while input.peek(Token![#]) {
+        parsed.push(input.parse()?);
+    }
+    Ok(parsed)
 }

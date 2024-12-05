@@ -52,11 +52,12 @@ pub fn dsl(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// ```
 #[proc_macro]
 pub fn dot(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let generator = parse_macro_input!(item with FSMGenerator::parse_dot);
-    let codegen = generator.codegen();
-    #[cfg(feature = "svg")]
-    let codegen = svg::attach(codegen, &generator);
-    codegen.into_token_stream().into()
+    todo!();
+    // let generator = parse_macro_input!(item with FSMGenerator::parse_dot);
+    // let codegen = generator.codegen();
+    // #[cfg(feature = "svg")]
+    // let codegen = svg::attach(codegen, &generator);
+    // codegen.into_token_stream().into()
 }
 
 #[cfg(feature = "svg")]
