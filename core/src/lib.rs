@@ -297,7 +297,12 @@ fn stmts2graph(
                 (None, Some(_)) | (Some(_), None) | (None, None) => {
                     append_docs(&mut occ.get_mut().doc, doc)
                 }
-                (Some(l), Some(r)) if l == r => append_docs(&mut occ.get_mut().doc, doc),
+                // don't compile `syn` with `extra-traits`
+                (Some(l), Some(r))
+                    if l.to_token_stream().to_string() == r.to_token_stream().to_string() =>
+                {
+                    append_docs(&mut occ.get_mut().doc, doc)
+                }
                 (Some(_), Some(_)) => bail_at!(name.span(), "incompatible redefinition"),
             },
             Vacant(v) => {

@@ -7,7 +7,6 @@ use syn::{
     token, Attribute, Generics, Ident, LitStr, Token, Type, Visibility,
 };
 
-#[derive(Debug, Clone)]
 pub(crate) struct Root {
     pub attrs: Vec<Attribute>,
     pub vis: Visibility,
@@ -63,7 +62,6 @@ impl Parse for Root {
     }
 }
 
-#[derive(Debug, Clone)]
 pub(crate) enum Statement {
     Node(Node),
     Transition {
@@ -85,7 +83,6 @@ impl Parse for Statement {
     }
 }
 
-#[derive(Debug, Clone)]
 pub(crate) struct Node {
     pub doc: Vec<DocAttr>,
     pub name: Ident,
@@ -107,7 +104,6 @@ impl Parse for Node {
     }
 }
 
-#[derive(Debug, Clone)]
 pub(crate) struct Arrow {
     pub doc: Vec<DocAttr>,
     pub kind: ArrowKind,
@@ -128,7 +124,6 @@ impl ToTokens for Arrow {
     }
 }
 
-#[derive(Debug, Clone)]
 pub(crate) enum ArrowKind {
     Plain(Token![->]),
     Named {
@@ -163,7 +158,8 @@ impl ToTokens for ArrowKind {
 }
 
 custom_keyword!(doc);
-#[derive(Debug, Clone)]
+
+#[derive(Clone)]
 pub(crate) struct DocAttr {
     pub pound: Token![#],
     pub bracket: token::Bracket,
@@ -228,7 +224,6 @@ fn docs_to_tokens(docs: &[DocAttr], tokens: &mut TokenStream) {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct VisIdent {
     pub vis: Visibility,
     pub ident: Ident,
@@ -249,7 +244,6 @@ impl ToTokens for VisIdent {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct ModulePath {
     leading_colon: Option<Token![::]>,
     segments: Punctuated<Ident, Token![::]>,

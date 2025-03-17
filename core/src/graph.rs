@@ -13,7 +13,6 @@ impl ToTokens for NodeId {
     }
 }
 
-#[derive(Debug, Clone)]
 pub(crate) struct NodeData {
     pub doc: Vec<DocAttr>,
     /// Stored as a single tuple member in the state enum.
