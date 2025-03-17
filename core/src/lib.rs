@@ -2,492 +2,27 @@
 //!
 //! See the [`fsmentry` crate](https://docs.rs/fsmentry).
 
+mod args;
 mod dsl;
+mod graph;
 
-use dsl::{DocAttr, Dsl, StateEnum};
-use heck::{ToSnakeCase as _, ToUpperCamelCase as _};
-use itertools::{Either, Itertools};
-use proc_macro2::{Ident, Span};
-use quote::{quote, ToTokens};
-use std::{cmp::Ordering, collections::BTreeMap, iter, mem};
+use std::{collections::BTreeMap, iter};
+
+use args::*;
+use proc_macro2::{Span, TokenStream};
+use quote::quote;
+use quote::ToTokens;
 use syn::{
-    parse::ParseStream, parse_quote, punctuated::Punctuated, spanned::Spanned as _, token,
-    GenericParam, Lifetime, LifetimeParam, LitStr, Token, Visibility,
+    parse::{Parse, ParseStream},
+    parse_quote,
+    punctuated::Punctuated,
+    spanned::Spanned as _,
+    Arm, Attribute, Expr, Generics, Ident, ImplGenerics, ItemImpl, ItemStruct, Lifetime, Token,
+    Type, TypeGenerics, Variant, Visibility, WhereClause,
 };
 
-#[derive(Hash, PartialEq, Eq, Debug, Clone, PartialOrd, Ord)]
-struct NodeId(Ident);
-
-impl From<Ident> for NodeId {
-    fn from(inner: Ident) -> Self {
-        Self(inner)
-    }
-}
-
-impl NodeId {
-    pub fn transition_fn(&self) -> Ident {
-        self.0.snake_case()
-    }
-    pub fn variant(&self) -> Ident {
-        self.0.UpperCamelCase()
-    }
-}
-
-fn ident(s: impl AsRef<str>) -> Ident {
-    Ident::new(s.as_ref(), Span::call_site())
-}
-impl ToTokens for NodeId {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.0.to_tokens(tokens);
-    }
-}
-
-#[derive(Debug, Clone)]
-struct NodeData {
-    /// Stored as a single tuple member in the state enum.
-    ty: Option<syn::Type>,
-    /// These are attached to each variant.
-    doc: Vec<DocAttr>,
-}
-
-/// A code generator for state machines with an entry API.
-///
-/// The generator is created with a graph definition in either:
-/// - [The `DOT` graph description language](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29).
-///   See [`Self::parse_dot`].
-/// - A domain specific language.
-///   See [`Self::parse_dsl`].
-///
-/// [`Self::codegen`] performs the actual generation.
-#[derive(Debug, Clone)]
-pub struct FSMGenerator {
-    /// All are passed through to the state enum and the state machine struct.
-    ///
-    /// `#[doc]` attributes are passed through to the module
-    attributes: Vec<syn::Attribute>,
-    vis: syn::Visibility,
-    ident: Ident,
-    /// All nodes must be in this map.
-    nodes: BTreeMap<NodeId, NodeData>,
-    /// Directed L -> R.
-    ///
-    /// Documentation is passed through to the transition functions
-    edges: BTreeMap<(NodeId, NodeId), Vec<DocAttr>>,
-}
-
-impl FSMGenerator {
-    /// Generates a state machine.
-    ///
-    /// The basic layout of the generated code is as follows:
-    ///
-    /// ```rust,ignore
-    /// (pub) mod <name> {
-    ///     // The actual state machine
-    ///     pub struct <name> { .. }
-    ///     // The possible states, including inner data
-    ///     pub enum State { .. }
-    ///     // The entry api, which gives you handles to transition the machine
-    ///     pub enum Entry { .. }
-    ///
-    ///     // additional structs are generated to perform the actual state transitions
-    /// }
-    /// ```
-    pub fn codegen(&self) -> syn::File {
-        let state_machine_name = self.ident.UpperCamelCase();
-        let state_enum_name = self.state_enum_name();
-        let entry_enum_name = self.entry_enum_name();
-
-        let mut state_variants = Punctuated::<syn::Variant, Token![,]>::new();
-        let mut entry_variants = Punctuated::<syn::Variant, Token![,]>::new();
-        let mut entry_has_lifetime = false;
-        let mut entry_construction = Vec::<syn::Arm>::new();
-        let mut transition_tys = Vec::<syn::ItemStruct>::new();
-        let mut transition_impls = Vec::<syn::ItemImpl>::new();
-        for (
-            node,
-            NodeData {
-                ty: node_ty,
-                doc: node_docs,
-            },
-        ) in self.nodes.iter()
-        {
-            let node_variant_name = node.variant();
-            let mut node_docs = node_docs.clone();
-            if let Some(reachability_docs) = self.reachability_docs(node) {
-                if !node_docs.is_empty() {
-                    node_docs.push(DocAttr::empty())
-                }
-                node_docs.extend(reachability_docs)
-            }
-
-            match (node_ty, self.outgoing(node)) {
-                (None, None) => {
-                    // This node has no data, and no transitions, so the entry and state enums are bare
-                    state_variants.push(parse_quote!(#(#node_docs)* #node_variant_name));
-                    entry_variants.push(parse_quote!(#(#node_docs)* #node_variant_name));
-                    entry_construction.push(parse_quote!(#state_enum_name::#node_variant_name => #entry_enum_name::#node_variant_name,))
-                }
-                (Some(ty), None) => {
-                    // This node has data, but no transitions, so the entry and state enums just contain a reference to the data
-                    state_variants.push(parse_quote!(#(#node_docs)* #node_variant_name(#ty)));
-                    entry_has_lifetime = true;
-                    entry_variants
-                        .push(parse_quote!(#(#node_docs)* #node_variant_name(&'a mut #ty)));
-                    entry_construction.push(parse_quote!{
-                        #state_enum_name::#node_variant_name(_) => {
-                            // need to reborrow to get the data
-                            match &mut self.state {
-                                #state_enum_name::#node_variant_name(data) => #entry_enum_name::#node_variant_name(data),
-                                _ => ::core::unreachable!("state cannot change underneath us while we hold a mutable reference")
-                            }
-                        }
-                    });
-                }
-                (node_data_ty, Some(outgoing)) => {
-                    // this node has transitions, so create a transition type
-                    let transition_ty_name = self.transition_ty(node);
-                    entry_has_lifetime = true;
-                    transition_tys.push({
-                        let method_docs = outgoing.iter().map(|(node, _)| {
-                            DocAttr::new(LitStr::new(
-                                &format!("- [`{}::{}`]", transition_ty_name, node.transition_fn()),
-                                Span::call_site(),
-                            ))
-                        });
-                        parse_quote!(
-                            /// Transition the state machine by calling the following methods:
-                            #(#method_docs)*
-                            pub struct #transition_ty_name<'a> {
-                                inner: &'a mut #state_enum_name,
-                            }
-                        )
-                    });
-                    entry_variants.push(
-                        parse_quote!(#(#node_docs)* #node_variant_name(#transition_ty_name<'a>)),
-                    );
-                    entry_construction.push(parse_quote!{
-                        #state_enum_name::#node_variant_name{..} => #entry_enum_name::#node_variant_name(#transition_ty_name {
-                            inner: &mut self.state,
-                        }),
-                    });
-                    let msg = "this variant is only created when state is known to match, and we hold a mutable reference to state";
-                    match node_data_ty {
-                        Some(ty) => {
-                            // this node has data, so store it in the state enum, and add getters for the transition type
-                            state_variants
-                                .push(parse_quote!(#(#node_docs)* #node_variant_name(#ty)));
-                            let (get, get_mut) = self.getter_names();
-                            transition_impls.push(parse_quote! {
-                                impl #transition_ty_name<'_> {
-                                    /// Get a reference to the data stored in this state
-                                    pub fn #get(&self) -> & #ty {
-                                        match &self.inner {
-                                            #state_enum_name::#node_variant_name(data) => data,
-                                            _ => ::core::unreachable!(#msg)
-                                        }
-                                    }
-                                    /// Get a mutable reference to the data stored in this state
-                                    pub fn #get_mut(&mut self) -> &mut #ty {
-                                        match self.inner {
-                                            #state_enum_name::#node_variant_name(data) => data,
-                                            _ => ::core::unreachable!(#msg)
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                        None => {
-                            state_variants.push(parse_quote!(#(#node_docs)* #node_variant_name));
-                        }
-                    }
-                    for (outgoing, transition_docs) in outgoing {
-                        let transition_fn_name = outgoing.transition_fn();
-                        let outgoing_variant_name = outgoing.variant();
-                        let methods: Vec<syn::ImplItemFn> = match (
-                            node_data_ty,
-                            &self.nodes[outgoing].ty,
-                        ) {
-                            // no data -> no data
-                            (None, None) => vec![parse_quote! {
-                                #(#transition_docs)*
-                                pub fn #transition_fn_name(self) {
-                                    let prev =
-                                    ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name);
-                                    ::core::debug_assert!(::core::matches!(prev, #state_enum_name::#node_variant_name));
-                                }
-                            }],
-                            // no data -> data
-                            (None, Some(out)) => vec![parse_quote! {
-                                #(#transition_docs)*
-                                pub fn #transition_fn_name(self, next: #out) {
-                                    let prev =
-                                    ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name(next));
-                                    ::core::debug_assert!(::core::matches!(prev, #state_enum_name::#node_variant_name));
-                                }
-                            }],
-                            // data -> no data
-                            (Some(input), None) => vec![parse_quote! {
-                                #(#transition_docs)*
-                                pub fn #transition_fn_name(self) -> #input {
-                                    let prev =
-                                    ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name);
-                                    match prev {
-                                        #state_enum_name::#node_variant_name(data) => data,
-                                        _ => ::core::unreachable!(#msg)
-                                    }
-                                }
-                            }],
-                            // data -> data
-                            (Some(input), Some(out)) => vec![parse_quote! {
-                            #(#transition_docs)*
-                            pub fn #transition_fn_name(self, next: #out) -> #input {
-                                let prev =
-                                ::core::mem::replace(self.inner, #state_enum_name::#outgoing_variant_name(next));
-                                match prev {
-                                    #state_enum_name::#node_variant_name(data) => data,
-                                    _ => ::core::unreachable!(#msg)
-                                }
-                            }}],
-                        };
-                        transition_impls.push(parse_quote!(
-                            impl #transition_ty_name<'_> {
-                                #(#methods)*
-                            }
-                        ));
-                    }
-                }
-            }
-        }
-
-        let attrs = &self.attributes;
-        let state_machine_struct: syn::ItemStruct = parse_quote! {
-            #(#attrs)*
-            pub struct #state_machine_name {
-                state: #state_enum_name
-            }
-        };
-        let state_machine_methods: syn::ItemImpl = parse_quote! {
-            impl #state_machine_name {
-                /// Create a new state machine
-                pub fn new(initial: #state_enum_name) -> Self {
-                    Self { state: initial }
-                }
-                /// Get a reference to the current state of the state machine
-                pub fn state(&self) -> &#state_enum_name {
-                    &self.state
-                }
-                /// Get a mutable reference to the current state of the state machine
-                pub fn state_mut(&mut self) -> &mut #state_enum_name {
-                    &mut self.state
-                }
-                /// Transition the state machine
-                #[must_use = "The state must be inspected and transitioned through the returned enum"]
-                pub fn entry(&mut self) -> #entry_enum_name {
-                    match &mut self.state {
-                        #(#entry_construction)*
-                    }
-                }
-            }
-        };
-        let attrs = &self.attributes;
-        let state_enum: syn::ItemEnum = parse_quote! {
-            #(#attrs)*
-            pub enum #state_enum_name {
-                #state_variants
-            }
-        };
-        let entry_enum_lifetime_param = match entry_has_lifetime {
-            false => None,
-            true => Some(quote!(<'a>)),
-        };
-        let comment = format!("See [`{}::entry`].", state_machine_name);
-        let entry_enum: syn::ItemEnum = parse_quote! {
-            /// Access to the current state with valid transitions for the state machine.
-            ///
-            #[doc = #comment]
-            pub enum #entry_enum_name #entry_enum_lifetime_param {
-                #entry_variants
-            }
-        };
-        transition_impls.extend(transition_tys.iter().map(|strukt| {
-            let ident = &strukt.ident;
-            parse_quote! {
-                impl ::core::fmt::Debug for #ident<'_> {
-                    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                        f.debug_struct(::core::stringify!(#ident)).finish_non_exhaustive()
-                    }
-                }
-            }
-        }));
-
-        let vis = &self.vis;
-        let module_name = self.ident.snake_case();
-        let attrs = self
-            .attributes
-            .iter()
-            .filter(|it| it.path().is_ident("doc"));
-
-        parse_quote! {
-            #(#attrs)*
-            #vis mod #module_name {
-                #state_machine_struct
-                #state_machine_methods
-                #state_enum
-                #entry_enum
-                #(#transition_tys)*
-                #(#transition_impls)*
-            }
-        }
-    }
-    /// Get a basic representation of this graph in dot, suitable for documenting the state machine.
-    pub fn dot(&self) -> syn_graphs::dot::Graph {
-        use syn_graphs::dot::{
-            kw, pun, EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId,
-            Stmt, StmtEdge, StmtList, StmtNode, ID,
-        };
-        fn conv_node_id(NodeId(inner): NodeId) -> DotNodeId {
-            DotNodeId {
-                id: ID::AnyIdent(inner),
-                port: None,
-            }
-        }
-
-        let span = Span::call_site();
-        let mut stmts = vec![];
-
-        for node_id in self.nodes.keys() {
-            stmts.push((
-                Stmt::Node(StmtNode {
-                    node_id: conv_node_id(node_id.clone()),
-                    attrs: None,
-                }),
-                Some(Token![;](span)),
-            ))
-        }
-        for (from, to) in self.edges.keys() {
-            stmts.push((
-                Stmt::Edge(StmtEdge {
-                    from: EdgeTarget::NodeId(conv_node_id(from.clone())),
-                    edges: vec![(
-                        EdgeDirectedness::Directed(pun::DirectedEdge(span)),
-                        EdgeTarget::NodeId(conv_node_id(to.clone())),
-                    )],
-                    attrs: None,
-                }),
-                Some(Token![;](span)),
-            ))
-        }
-
-        Graph {
-            strict: Some(kw::strict(span)),
-            directedness: GraphDirectedness::Digraph(kw::digraph(span)),
-            id: Some(ID::AnyIdent(self.ident.clone())),
-            brace_token: token::Brace(span),
-            stmt_list: StmtList { stmts },
-        }
-    }
-    fn state_enum_name(&self) -> Ident {
-        ident("State")
-    }
-    fn entry_enum_name(&self) -> Ident {
-        ident("Entry")
-    }
-    fn transition_ty(&self, node_id: &NodeId) -> Ident {
-        ident(format!("{}", node_id.0.UpperCamelCase()))
-    }
-    fn getter_names(&self) -> (Ident, Ident) {
-        fn names(root: &str) -> impl Iterator<Item = (Ident, Ident)> + '_ {
-            (0..).map(move |n| {
-                let mut get = String::from(root);
-                let mut get_mut = format!("{}_mut", root);
-                for _ in 0..n {
-                    for s in [&mut get, &mut get_mut] {
-                        s.push('_')
-                    }
-                }
-
-                (ident(get), ident(get_mut))
-            })
-        }
-
-        for (get, get_mut) in itertools::interleave(names("get"), names("get_data")) {
-            if self.nodes.contains_key(&NodeId(get.clone())) {
-                continue;
-            }
-            if self.nodes.contains_key(&NodeId(get_mut.clone())) {
-                continue;
-            }
-            return (get, get_mut);
-        }
-        unreachable!()
-    }
-    /// [`None`] if the node is a source
-    fn incoming(&self, to: &NodeId) -> Option<Vec<&NodeId>> {
-        let vec = self
-            .edges
-            .iter()
-            .filter_map(move |((src, dst), _)| match dst == to {
-                true => Some(src),
-                false => None,
-            })
-            .collect::<Vec<_>>();
-        match vec.is_empty() {
-            true => None,
-            false => Some(vec),
-        }
-    }
-    /// [`None`] if the node is a sink
-    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Option<Vec<(&NodeId, &[DocAttr])>> {
-        let vec = self
-            .edges
-            .iter()
-            .filter_map(move |((src, dst), docs)| match src == from {
-                true => Some((dst, docs.as_slice())),
-                false => None,
-            })
-            .collect::<Vec<_>>();
-        match vec.is_empty() {
-            true => None,
-            false => Some(vec),
-        }
-    }
-    fn reachability_docs(&self, node: &NodeId) -> Option<Vec<DocAttr>> {
-        // let mut docs = vec![];
-        // let span = Span::call_site();
-        // if let Some(incoming) = self.incoming(node) {
-        //     docs.push(DocAttr::new(
-        //         "This node is reachable from the following states:",
-        //         span,
-        //     ));
-        //     for each in incoming {
-        //         docs.push(DocAttr::new(
-        //             &format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
-        //             span,
-        //         ))
-        //     }
-        // }
-        // if let Some(outgoing) = self.outgoing(node) {
-        //     if !docs.is_empty() {
-        //         docs.push(DocAttr::new("", span))
-        //     }
-        //     docs.push(DocAttr::new(
-        //         "This node can reach the following states:",
-        //         span,
-        //     ));
-        //     for (each, _) in outgoing {
-        //         docs.push(DocAttr::new(
-        //             &format!("- [`{}::{}`]", self.state_enum_name(), each.variant()),
-        //             span,
-        //         ))
-        //     }
-        // }
-        // match docs.is_empty() {
-        //     true => None,
-        //     false => Some(docs),
-        // }
-        todo!()
-    }
-}
+use crate::dsl::*;
+use crate::graph::*;
 
 macro_rules! bail_at {
     ($span:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
@@ -495,372 +30,457 @@ macro_rules! bail_at {
     };
 }
 
-impl FSMGenerator {
-    /// Parse a state machine from the following language:
-    /// ```
-    /// # use syn::parse::Parser as _;
-    /// # fsmentry_core::FSMGenerator::parse_dsl.parse2(quote::quote! {
-    /// /// This is documentation for the state machine.
-    /// #[derive(Clone)] // these attributes will be passed to
-    ///                  // MyStateMachine and the State enum
-    /// pub MyStateMachine {
-    ///     /// This is a node declaration.
-    ///     /// This documentation will be attached to the node.
-    ///     ShavingYaks;
-    ///
-    ///     /// This node contains data.
-    ///     SweepingHair: usize;
-    ///
-    ///     /// These are edge declarations
-    ///     /// This documentation will be shared with each edge.
-    ///     ShavingYaks -> SweepingHair -"this is edge-specific documentation"-> Resting;
-    ///                         // implicit nodes will be created as appropriate ^
-    /// }
-    /// # }).unwrap();
-    /// ```
-    pub fn parse_dsl(input: ParseStream) -> syn::Result<Self> {
-        Self::try_from_dsl(input.parse()?)
+pub fn from_dsl(tokens: TokenStream) -> syn::Result<TokenStream> {
+    Ok(syn::parse2::<FsmEntry>(tokens)?.to_token_stream())
+}
+
+/// A [`Parse`]-able and [printable](ToTokens) representation of a state machine.
+pub struct FsmEntry {
+    state_attrs: Vec<Attribute>,
+    state_vis: Visibility,
+    state_ident: Ident,
+    state_generics: Generics,
+
+    r#unsafe: bool,
+    path_to_core: ModulePath,
+
+    extra_entry_attrs: Vec<Attribute>,
+    entry_vis: Visibility,
+    entry_ident: Ident,
+    entry_lifetime: Lifetime,
+
+    graph: Graph,
+}
+
+impl FsmEntry {
+    pub fn extend_entry_attrs(&mut self, ii: impl IntoIterator<Item = Attribute>) {
+        self.extra_entry_attrs.extend(ii);
     }
+    pub fn nodes(&self) -> impl Iterator<Item = &Ident> {
+        self.graph.nodes.keys().map(|NodeId(ident)| ident)
+    }
+    pub fn edges(&self) -> impl Iterator<Item = (&Ident, &Ident)> {
+        self.graph.edges.keys().map(|(NodeId(f), NodeId(t))| (f, t))
+    }
+}
 
-    /// Parse a state machine from the [`DOT` graph description language](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29):
-    /// ```
-    /// # use syn::parse::Parser as _;
-    /// # fsmentry_core::FSMGenerator::parse_dot.parse2(quote::quote! {
-    /// digraph my_state_machine {
-    ///     // declaring a node.
-    ///     shaving_yaks;
-    ///     
-    ///     // declaring some edges, with implicit nodes.
-    ///     shaving_yaks -> sweeping_hair -> resting;
-    /// }
-    /// # }).unwrap();
-    /// ```
-    // Transpiles DOT to the DSL, and then calls [`Self::try_from_dsl`]
-    #[cfg(off)]
-    pub fn parse_dot(input: ParseStream) -> syn::Result<Self> {
-        use dsl::{
-            pun, Edge as DslEdge, Stmt as DslStmt, StmtEdges as DslStmtEdges,
-            StmtNode as DslStmtNode,
+impl ToTokens for FsmEntry {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            state_attrs,
+            state_vis,
+            state_ident,
+            state_generics,
+            r#unsafe,
+            path_to_core,
+            entry_vis,
+            entry_ident,
+            entry_lifetime,
+            graph,
+            extra_entry_attrs,
+        } = self;
+        let mut state_variants: Vec<Variant> = vec![];
+        let mut entry_variants: Vec<Variant> = vec![];
+        let mut entry_structs: Vec<ItemStruct> = vec![];
+        let mut match_ctor: Vec<Arm> = vec![];
+        let mut as_ref_as_mut: Vec<ItemImpl> = vec![];
+        let mut transition: Vec<ItemImpl> = vec![];
+
+        let replace: ModulePath = parse_quote!(#path_to_core::mem::replace);
+        let panik: &Expr = &match r#unsafe {
+            true => parse_quote!(unsafe { #path_to_core::hint::unreachable_unchecked() }),
+            false => {
+                parse_quote!(#path_to_core::panic!("entry struct was instantiated with a mismatched state"))
+            }
         };
-        use syn_graphs::dot::{
-            EdgeDirectedness, EdgeTarget, Graph, GraphDirectedness, NodeId as DotNodeId,
-            Stmt as DotStmt, StmtEdge as DotStmtEdge, StmtNode as DotStmtNode, ID,
+
+        let entry_generics = {
+            let mut it = state_generics.clone();
+            it.params.insert(0, parse_quote!(#entry_lifetime));
+            it
         };
-        let Graph {
-            strict: _,
-            directedness,
-            id,
-            brace_token,
-            stmt_list,
-        } = input.parse::<Graph>()?;
-        let GraphDirectedness::Digraph(_) = directedness else {
-            bail_at!(directedness.span(), "must be `digraph`")
-        };
-        let Some(ID::AnyIdent(id)) = id else {
-            bail_at!(directedness.span(), "graph must be named")
-        };
-        let mut stmts = vec![];
-        let span = Span::call_site();
-        for (stmt, _) in stmt_list.stmts {
-            match stmt {
-                DotStmt::Node(DotStmtNode {
-                    node_id: DotNodeId { id, port },
-                    attrs,
-                }) => {
-                    if let Some(attrs) = attrs {
-                        bail_at!(attrs.span(), "attrs are not supported")
-                    }
-                    if let Some(port) = port {
-                        bail_at!(port.span(), "ports are not supported")
-                    }
-                    let ID::AnyIdent(id) = id else {
-                        bail_at!(id.span(), "unsupported id")
-                    };
-                    stmts.push(DslStmt::Node(DslStmtNode {
-                        attrs: vec![],
-                        ident: syn::parse2(id.into_token_stream())?,
-                        colon: None,
-                        ty: None,
-                        semi: Token![;](span),
-                    }))
+        let (state_impl_generics, state_type_generics, _) = state_generics.split_for_impl();
+        let (entry_impl_generics, entry_type_generics, where_clause) =
+            entry_generics.split_for_impl();
+
+        for (node, NodeData { doc, ty }, ref kind) in graph.nodes() {
+            state_variants.push(match ty {
+                Some(ty) => parse_quote!(#(#doc)* #node(#ty)),
+                None => parse_quote!(#(#doc)* #node),
+            });
+            match_ctor.push(match (ty, kind) {
+                (Some(_), Kind::Isolate | Kind::Sink(_)) => {
+                    parse_quote!(#state_ident::#node(it) => #entry_ident::#node(it))
                 }
-                DotStmt::Edge(DotStmtEdge { from, edges, attrs }) => {
-                    if let Some(attrs) = attrs {
-                        bail_at!(attrs.span(), "attrs are not supported")
-                    };
-                    let mut rest = edges
-                        .into_iter()
-                        .map(|(dir, to)| {
-                            let EdgeDirectedness::Directed(_) = dir else {
-                                bail_at!(dir.span(), "edge must be directed")
-                            };
-                            Ok((
-                                DslEdge::Short(pun::ShortArrow(span)),
-                                edge_target_to_ident(to)?,
-                            ))
-                        })
-                        .collect::<syn::Result<Vec<_>>>()?;
-
-                    let (edge, to) = rest.remove(0);
-
-                    stmts.push(DslStmt::Edges(DslStmtEdges {
-                        attrs: vec![],
-                        from: edge_target_to_ident(from)?,
-                        edge,
-                        to,
-                        rest,
-                        semi: Token![;](span),
-                    }))
+                (None, Kind::Isolate | Kind::Sink(_)) => {
+                    parse_quote!(#state_ident::#node     => #entry_ident::#node)
                 }
-                it @ (DotStmt::Attr(_) | DotStmt::Assign(_) | DotStmt::Subgraph(_)) => {
-                    bail_at!(it.span(), "unsupported statement")
+                (Some(_), Kind::NonTerminal { .. } | Kind::Source(_)) => {
+                    parse_quote!(#state_ident::#node(_)  => #entry_ident::#node(#node(value)))
+                }
+                (None, Kind::NonTerminal { .. } | Kind::Source(_)) => {
+                    parse_quote!(#state_ident::#node     => #entry_ident::#node(#node(value)))
+                }
+            });
+            let reachability = reachability_docs(&node.0, state_ident, kind);
+            entry_variants.push(match kind {
+                Kind::Isolate | Kind::Sink(_) => match ty {
+                    Some(ty) => parse_quote!(#(#reachability)* #node(&#entry_lifetime mut #ty)),
+                    None => parse_quote!(#(#reachability)* #node),
+                },
+                Kind::Source(_) | Kind::NonTerminal { .. } => {
+                    parse_quote!(#(#reachability)* #node(#node #entry_type_generics))
+                }
+            });
+            if let Kind::Source(outgoing) | Kind::NonTerminal { outgoing, .. } = kind {
+                entry_structs.push(parse_quote! {
+                    #entry_vis struct #node #entry_type_generics(
+                        & #entry_lifetime mut #state_ident #state_type_generics
+                    )
+                    #where_clause;
+                });
+                for (dst, NodeData { ty: dst_ty, .. }, EdgeData { method_name, doc }) in outgoing {
+                    let body = make_body(
+                        state_ident,
+                        node,
+                        ty.as_ref(),
+                        dst,
+                        dst_ty.as_ref(),
+                        method_name,
+                        &replace,
+                        panik,
+                    );
+                    let pointer = DocAttr::new(
+                        &format!(" Transition to [`{state_ident}::{}`]", dst.0),
+                        Span::call_site(),
+                    );
+                    let pointer = match doc.is_empty() {
+                        true => vec![pointer],
+                        false => vec![DocAttr::empty(), pointer],
+                    };
+                    transition.push(parse_quote! {
+                        #[allow(clippy::needless_lifetimes)]
+                        impl #entry_impl_generics #node #entry_type_generics
+                        #where_clause
+                        {
+                            #(#doc)*
+                            #(#pointer)*
+                            #body
+                        }
+                    });
+                }
+
+                if let Some(ty) = ty {
+                    as_ref_as_mut.extend(make_as_ref_mut(
+                        &entry_impl_generics,
+                        path_to_core,
+                        ty,
+                        state_ident,
+                        &node.0,
+                        &entry_type_generics,
+                        where_clause,
+                        panik,
+                    ));
                 }
             }
         }
-        return Self::try_from_dsl(crate::dsl::Dsl {
-            attrs: vec![],
-            vis: parse_quote!(pub),
-            name: syn::parse2(id.into_token_stream())?,
-            brace_token,
+
+        let mut entry_attrs = vec![{
+            let doc = format!(" Progress through variants of [`{state_ident}`], created by its [`entry`]({state_ident}::entry) method.");
+            parse_quote!(#[doc = #doc])
+        }];
+        if !extra_entry_attrs.is_empty() {
+            entry_attrs.push(parse_quote!(#[doc = ""]));
+            entry_attrs.extend(extra_entry_attrs.clone());
+        }
+
+        tokens.extend(quote! {
+            #(#state_attrs)*
+            #state_vis enum #state_ident #state_generics #where_clause {
+                #(#state_variants),*
+            }
+            #(#entry_attrs)*
+            #entry_vis enum #entry_ident #entry_generics #where_clause {
+                #(#entry_variants),*
+            }
+            impl #entry_impl_generics
+                #path_to_core::convert::From<& #entry_lifetime mut #state_ident #state_generics>
+            for #entry_ident #entry_type_generics
+            #where_clause {
+                fn from(value: & #entry_lifetime mut #state_ident #state_generics) -> Self {
+                    match value {
+                        #(#match_ctor),*
+                    }
+                }
+            }
+            impl #state_impl_generics #state_ident #state_type_generics
+            #where_clause {
+                #entry_vis fn entry<#entry_lifetime>(& #entry_lifetime mut self) -> #entry_ident #entry_type_generics {
+                    self.into()
+                }
+            }
+            #(#entry_structs)*
+            #(#as_ref_as_mut)*
+            #(#transition)*
+        });
+    }
+}
+
+impl Parse for FsmEntry {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let Root {
+            attrs: mut state_attrs,
+            vis: state_vis,
+            r#enum: _,
+            ident: state_ident,
+            generics: state_generics,
+            brace: _,
             stmts,
-        });
+        } = input.parse()?;
 
-        fn edge_target_to_ident(edge_target: EdgeTarget) -> syn::Result<Ident> {
-            match edge_target {
-                EdgeTarget::Subgraph(_) => {
-                    bail_at!(edge_target.span(), "subgraphs are not supported")
-                }
-                EdgeTarget::NodeId(DotNodeId { id, port }) => {
-                    if let Some(port) = port {
-                        bail_at!(port.span(), "ports are not supported")
-                    }
-                    let ID::AnyIdent(id) = id else {
-                        bail_at!(id.span(), "only idents are allowed here")
-                    };
-                    syn::parse2(id.into_token_stream())
-                }
-            }
-        }
-    }
+        let mut rename_methods = true;
+        let mut entry = VisIdent {
+            vis: state_vis.clone(),
+            ident: Ident::new(&format!("{}Entry", state_ident), Span::call_site()),
+        };
+        let mut r#unsafe = false;
+        let mut path_to_core: ModulePath = parse_quote!(::core);
+        let mut parser = Parser::new()
+            .once("rename_methods", on_value(bool(&mut rename_methods)))
+            .once("entry", on_value(parse(&mut entry)))
+            .once("unsafe", on_value(bool(&mut r#unsafe)))
+            .once("path_to_core", on_value(parse(&mut path_to_core)));
+        parser.extract("fsmentry", &mut state_attrs)?;
+        drop(parser);
+        let graph = stmts2graph(&stmts, rename_methods)?;
+        let VisIdent {
+            vis: entry_vis,
+            ident: entry_ident,
+        } = entry;
 
-    /// Turns the statements into a graph.
-    fn try_from_dsl(mut dsl: crate::dsl::Dsl) -> syn::Result<Self> {
-        todo!()
+        Ok(Self {
+            state_attrs,
+            state_vis,
+            state_ident,
+            state_generics,
+            r#unsafe,
+            path_to_core,
+            entry_vis,
+            entry_ident,
+            entry_lifetime: parse_quote!('state),
+            extra_entry_attrs: vec![],
+            graph,
+        })
     }
 }
 
-fn generate(dsl: &Dsl<Graph>) {
-    let Dsl {
-        doc: mod_doc,
-        vis: mod_vis,
-        r#mod,
-        name: mod_name,
-        brace: mod_brace,
-        state:
-            StateEnum {
-                attrs: state_enum_attrs,
-                vis: state_enum_vis,
-                r#enum,
-                name: state_enum_name,
-                generics: state_enum_generics,
-                brace: state_enum_brace,
-                dfn: graph,
-            },
-    } = dsl;
-
-    let unreachable = quote!(::core::unreachable);
-    #[allow(non_snake_case)]
-    let AsRef = quote!(::core::convert::AsRef);
-    #[allow(non_snake_case)]
-    let AsMut = quote!(::core::convert::AsMut);
-    #[allow(non_snake_case)]
-    let Borrow = quote!(::core::borrow::Borrow);
-    #[allow(non_snake_case)]
-    let BorrowMut = quote!(::core::borrow::BorrowMut);
-
-    let entry_enum_name = Ident::new(&format!("{state_enum_name}Entry"), Span::call_site());
-    let lt: Lifetime = parse_quote!('state);
-
-    let mut state_variants: Vec<syn::Variant> = vec![];
-    let mut entry_variants: Vec<syn::Variant> = vec![];
-    let mut entry_structs: Vec<syn::ItemStruct> = vec![];
-    let mut entry_ctor: Vec<syn::Arm> = vec![];
-
-    let mut entry_has_lifetime = false;
-    let entry_generics = {
-        let mut it = state_enum_generics.clone();
-        it.params
-            .insert(0, GenericParam::Lifetime(LifetimeParam::new(lt.clone())));
-        it
-    };
-    let (_, entry_ty_generics, _) = entry_generics.split_for_impl();
-
-    let (_, ty_generics, _) = state_enum_generics.split_for_impl();
-    for (node, NodeData { ty, doc }) in &graph.nodes {
-        state_variants.push(match ty {
-            Some(ty) => parse_quote!(#(#doc)* #node: #ty),
-            None => parse_quote!(#(#doc)* #node),
-        });
-        let outgoing = graph.outgoing(node);
-
-        match (ty, outgoing.is_empty()) {
-            (None, true) => {
-                // no data, no transitions
-                state_variants.push(parse_quote!(#node));
-                entry_variants.push(parse_quote!(#node));
-                entry_ctor.push(parse_quote!(#state_enum_name::#node => #entry_enum_name::#node));
-            }
-            (Some(ty), true) => {
-                // data, no transitions
-                entry_has_lifetime = true;
-                state_variants.push(parse_quote!(#node(#ty)));
-                entry_variants.push(parse_quote!(#node(&#lt mut #ty)));
-                entry_ctor.push(parse_quote!(#state_enum_name::#node(it) => #entry_enum_name(it)));
-            }
-            (None, false) => {
-                // no data, transitions
-                entry_has_lifetime = true;
-            }
-            (Some(_), false) => {
-                // data, transitions
-                entry_has_lifetime = true;
-            }
-        }
-    }
-    todo!()
-}
-
-/// This is the last fallible step.
-fn statements2graph(mut dsl: Dsl) -> syn::Result<Dsl<Graph>> {
-    use dsl::*;
+fn stmts2graph(
+    stmts: &Punctuated<Statement, Token![,]>,
+    rename_methods: bool,
+) -> syn::Result<Graph> {
     use std::collections::btree_map::Entry::{Occupied, Vacant};
 
     let mut nodes = BTreeMap::<NodeId, NodeData>::new();
-    let mut edges = BTreeMap::<(NodeId, NodeId), Vec<DocAttr>>::new();
+    let mut edges = BTreeMap::<(NodeId, NodeId), EdgeData>::new();
 
-    let stmts = mem::take(&mut dsl.state.dfn);
-
-    // define all the nodes in a separate traversal
-    // so that transition definitions may include types, at any location
-    for (Node { name, ty }, docs) in stmts.iter().flat_map(|it| match it {
-        Statement::Node { node, doc } => Either::Left(iter::once((node, &**doc))),
-        Statement::Transition { first, rest, .. } => Either::Right(
-            iter::once(first)
-                .chain(rest.iter().map(|(_, it)| it))
-                .map(|it| (it, &[][..])),
-        ),
+    // Define all the nodes upfront.
+    // Note that transition definitions may include types, at any location.
+    for Node { name, ty, doc } in stmts.iter().flat_map(|it| match it {
+        Statement::Node(it) => Box::new(iter::once(it)) as Box<dyn Iterator<Item = _>>,
+        Statement::Transition { first, rest, .. } => {
+            Box::new(iter::once(first).chain(rest.iter().map(|(_, it)| it)))
+        }
     }) {
         let ty = ty.as_ref().map(|(_, it)| it);
-        match nodes.entry(name.clone().into()) {
-            Occupied(mut occ) => {
-                occ.get_mut().doc.extend_from_slice(docs);
-                match (&occ.get().ty, ty) {
-                    (None, Some(_)) | (Some(_), None) | (None, None) => {}
-                    (Some(l), Some(r)) if l == r => {}
-                    (Some(_), Some(_)) => bail_at!(name.span(), "incompatible redefinition"),
+        match nodes.entry(NodeId(name.clone())) {
+            Occupied(mut occ) => match (&occ.get().ty, ty) {
+                (None, Some(_)) | (Some(_), None) | (None, None) => {
+                    append_docs(&mut occ.get_mut().doc, doc)
                 }
-            }
+                (Some(l), Some(r)) if l == r => append_docs(&mut occ.get_mut().doc, doc),
+                (Some(_), Some(_)) => bail_at!(name.span(), "incompatible redefinition"),
+            },
             Vacant(v) => {
                 v.insert(NodeData {
                     ty: ty.cloned(),
-                    doc: docs.to_owned(),
+                    doc: doc.clone(),
                 });
             }
         };
     }
 
     for stmt in stmts {
-        let Statement::Transition {
-            doc: shared_doc,
-            first,
-            rest,
-        } = stmt
-        else {
+        let Statement::Transition { first, rest } = stmt else {
             continue; // handled above
         };
 
-        let mut from = first.name;
+        let mut from = first.name.clone();
 
-        for (arrow, Node { name: to, ty: _ }) in rest {
-            match edges.entry((from.clone().into(), to.clone().into())) {
-                Occupied(_) => bail_at!(arrow.span(), "duplicate edge definition"),
+        for (Arrow { doc, kind }, Node { name: to, .. }) in rest {
+            match edges.entry((NodeId(from.clone()), NodeId(to.clone()))) {
+                Occupied(_) => bail_at!(kind.span(), "duplicate edge definition"),
                 Vacant(v) => {
-                    v.insert(match arrow {
-                        Arrow::Plain(..) => shared_doc.clone(),
-                        Arrow::Doc { doc: this_doc, .. } => {
-                            let mut doc = shared_doc.clone();
-                            if !doc.is_empty() {
-                                doc.push(DocAttr::empty());
-                            }
-                            doc.push(DocAttr::new(this_doc));
-                            doc
-                        }
+                    v.insert(EdgeData {
+                        doc: doc.clone(),
+                        method_name: match kind {
+                            ArrowKind::Plain(_) => match rename_methods {
+                                true => snake_case(to),
+                                false => to.clone(),
+                            },
+                            ArrowKind::Named { ident, .. } => ident.clone(),
+                        },
                     });
                 }
             }
-            from = to;
+            from = to.clone();
         }
     }
 
-    if nodes.is_empty() {
-        bail_at!(dsl.state.name.span(), "must have at least one state")
-    }
-
-    if matches!(dsl.state.vis, Visibility::Inherited) {
-        dsl.state.vis = parse_quote!(pub(super));
-    }
-
-    Ok(dsl.map(|_| Graph { nodes, edges }))
+    Ok(Graph { nodes, edges })
 }
 
-/// Don't want to take a dependency on petgraph
-///
-/// Our graphs are small enough that we don't need to optimise
-struct Graph {
-    /// All nodes referenced in `edges` are here.
-    nodes: BTreeMap<NodeId, NodeData>,
-    /// Directed L -> R.
-    edges: BTreeMap<(NodeId, NodeId), Vec<DocAttr>>,
+fn reachability_docs(node_ident: &Ident, state_ident: &Ident, kind: &Kind<'_>) -> Vec<DocAttr> {
+    let span = Span::call_site();
+    let mut dst = vec![DocAttr::new(
+        &format!(" Represents [`{state_ident}::{node_ident}`]"),
+        span,
+    )];
+    if let Kind::Sink(incoming) | Kind::NonTerminal { incoming, .. } = kind {
+        dst.extend([
+            DocAttr::empty(),
+            DocAttr::new(" This state is reachable from the following:", span),
+        ]);
+        dst.extend(incoming.iter().map(|(NodeId(other), _, EdgeData { method_name, .. })| {
+            let s = format!(" - [`{other}`]({state_ident}::{other}) via [`{method_name}`]({other}::{method_name})");
+            DocAttr::new(&s, Span::call_site())
+        }));
+    }
+    if let Kind::Source(outgoing) | Kind::NonTerminal { outgoing, .. } = kind {
+        dst.extend([
+            DocAttr::empty(),
+            DocAttr::new(" This state can transition to the following:", span),
+        ]);
+        dst.extend(outgoing.iter().map(|(NodeId(other), _, EdgeData { method_name, .. })| {
+            let s = format!(" - [`{other}`]({state_ident}::{other}) via [`{method_name}`]({node_ident}::{method_name})");
+            DocAttr::new(&s, Span::call_site())
+        }));
+    }
+    dst
 }
 
-impl Graph {
-    fn outgoing<'a>(&'a self, from: &'a NodeId) -> Vec<(&'a NodeId, &'a NodeData, &'a [DocAttr])> {
-        self.edges
-            .iter()
-            .filter_map(move |((it, to), doc)| {
-                (it == from).then_some((to, &self.nodes[to], &**doc))
-            })
-            .collect()
-    }
-    fn incoming<'a>(&'a self, to: &'a NodeId) -> Vec<(&'a NodeId, &'a NodeData, &'a [DocAttr])> {
-        self.edges
-            .iter()
-            .filter_map(move |((from, it), doc)| {
-                (it == from).then_some((to, &self.nodes[to], &**doc))
-            })
-            .collect()
-    }
-}
-
-trait IdentExt {
-    fn get_ident(&self) -> &Ident;
-    #[allow(non_snake_case)]
-    fn UpperCamelCase(&self) -> Ident {
-        Ident::new(
-            &self.get_ident().to_string().to_upper_camel_case(),
-            self.get_ident().span(),
-        )
-    }
-    fn snake_case(&self) -> Ident {
-        Ident::new(
-            &self.get_ident().to_string().to_snake_case(),
-            self.get_ident().span(),
-        )
+fn append_docs(dst: &mut Vec<DocAttr>, src: &[DocAttr]) {
+    match (dst.is_empty(), src.is_empty()) {
+        (true, true) => {}
+        (true, false) => dst.extend_from_slice(src),
+        (false, true) => {}
+        (false, false) => {
+            dst.push(DocAttr::empty());
+            dst.extend_from_slice(src);
+        }
     }
 }
 
-impl IdentExt for Ident {
-    fn get_ident(&self) -> &Ident {
-        self
+fn snake_case(ident: &Ident) -> Ident {
+    let ident = ident.to_string();
+    let mut snake = String::new();
+    for (i, ch) in ident.char_indices() {
+        if i > 0 && ch.is_uppercase() {
+            snake.push('_');
+        }
+        snake.push(ch.to_ascii_lowercase());
     }
+    match (syn::parse_str(&snake), {
+        snake.insert_str(0, "r#");
+        syn::parse_str(&snake)
+    }) {
+        (Ok(it), _) | (_, Ok(it)) => it,
+        _ => panic!("bad ident {ident}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_body(
+    state_ident: &Ident,
+    node: &NodeId,
+    ty: Option<&Type>,
+    dst: &NodeId,
+    dst_ty: Option<&Type>,
+    method_name: &Ident,
+    replace: &ModulePath,
+    panik: &Expr,
+) -> TokenStream {
+    match (ty, dst_ty) {
+        (None, None) => quote! {
+            pub fn #method_name(self) {
+                match #replace(self.0, #state_ident::#dst) {
+                    #state_ident::#node => {},
+                    _ => #panik,
+                }
+            }
+        },
+        (None, Some(dst_ty)) => quote! {
+            pub fn #method_name(self, next: #dst_ty) {
+                match #replace(self.0, #state_ident::#dst(next)) {
+                    #state_ident::#node => {},
+                    _ => #panik,
+                }
+            }
+        },
+        (Some(ty), None) => quote! {
+            pub fn #method_name(self) -> #ty {
+                match #replace(self.0, #state_ident::#dst) {
+                    #state_ident::#node(it) => it,
+                    _ => #panik,
+                }
+            }
+        },
+        (Some(ty), Some(dst_ty)) => quote! {
+            pub fn #method_name(self, next: #dst_ty) -> #ty {
+                match #replace(self.0, #state_ident::#dst(next)) {
+                    #state_ident::#node(it) => it,
+                    _ => #panik,
+                }
+            }
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_as_ref_mut(
+    entry_impl_generics: &ImplGenerics,
+    path_to_core: &ModulePath,
+    ty: &Type,
+    state_ident: &Ident,
+    node_ident: &Ident,
+    entry_type_generics: &TypeGenerics,
+    where_clause: Option<&WhereClause>,
+    panik: &Expr,
+) -> [ItemImpl; 2] {
+    let as_ref = parse_quote! {
+        #[allow(clippy::needless_lifetimes)]
+        impl #entry_impl_generics #path_to_core::convert::AsRef<#ty> for #node_ident #entry_type_generics
+        #where_clause
+        {
+            fn as_ref(&self) -> &#ty {
+                match &self.0 {
+                    #state_ident::#node_ident(it) => it,
+                    _ => #panik
+                }
+            }
+        }
+    };
+    let as_mut = parse_quote! {
+        #[allow(clippy::needless_lifetimes)]
+        impl #entry_impl_generics #path_to_core::convert::AsMut<#ty> for #node_ident #entry_type_generics
+        #where_clause
+        {
+            fn as_mut(&mut self) -> &mut #ty {
+                match &mut self.0 {
+                    #state_ident::#node_ident(it) => it,
+                    _ => #panik
+                }
+            }
+        }
+    };
+    [as_ref, as_mut]
 }

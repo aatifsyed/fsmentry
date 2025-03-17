@@ -1,146 +1,100 @@
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream};
 use quote::ToTokens;
 use syn::{
     braced, bracketed, custom_keyword, parenthesized,
     parse::{Parse, ParseStream},
-    punctuated::Punctuated,
+    punctuated::{Pair, Punctuated},
     token, Attribute, Generics, Ident, LitStr, Token, Type, Visibility,
 };
 
-pub struct Dsl<T = Punctuated<Statement, Token![,]>> {
-    pub doc: Vec<DocAttr>,
-    pub vis: Visibility,
-    pub r#mod: Token![mod],
-    pub name: Ident,
-    pub brace: token::Brace,
-    pub state: StateEnum<T>,
-}
-
-impl<T> Dsl<T> {
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Dsl<U> {
-        let Self {
-            doc,
-            vis,
-            r#mod,
-            name,
-            brace,
-            state,
-        } = self;
-        Dsl {
-            doc,
-            vis,
-            r#mod,
-            name,
-            brace,
-            state: state.map(f),
-        }
-    }
-}
-
-impl Parse for Dsl {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let content;
-        Ok(Self {
-            doc: parse_docs(input)?,
-            vis: input.parse()?,
-            r#mod: input.parse()?,
-            name: input.parse()?,
-            brace: braced!(content in input),
-            state: content.parse()?,
-        })
-    }
-}
-
-pub struct StateEnum<T = Punctuated<Statement, Token![,]>> {
+#[derive(Debug, Clone)]
+pub(crate) struct Root {
     pub attrs: Vec<Attribute>,
     pub vis: Visibility,
-    pub r#enum: Token![enum],
-    pub name: Ident,
+    #[allow(unused)]
+    pub r#enum: token::Enum, // can't use `Token![enum]` with `#[derive(..)]`
+    pub ident: Ident,
     pub generics: Generics,
+    #[allow(unused)]
     pub brace: token::Brace,
-    pub dfn: T,
+    pub stmts: Punctuated<Statement, Token![,]>,
 }
 
-impl<T> StateEnum<T> {
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> StateEnum<U> {
-        let Self {
-            attrs,
-            vis,
-            r#enum,
-            name,
-            generics,
-            brace,
-            dfn,
-        } = self;
-        StateEnum {
-            attrs,
-            vis,
-            r#enum,
-            name,
-            generics,
-            brace,
-            dfn: f(dfn),
-        }
-    }
-}
+#[test]
+fn state_enum() {
+    let _: Root = syn::parse_quote! {
+    pub enum State<'a, T>
+    where
+        T: Ord
+    {
+        PopulatedIsland(String),
+        DesertIsland,
 
-impl Parse for StateEnum {
+        Fountain(&'a mut T)
+            /// Go over the water
+            -fountain2bridge-> BeautifulBridge(Vec<u8>)
+            /// Reuse the rocks
+            -bridge2tombstone-> Tombstone(char),
+        /// This fountain is so pretty!
+        Fountain -> Plank ->
+            /// This grave is simple, and beautiful in its simplicity.
+            UnmarkedGrave,
+
+        Stream -> BeautifulBridge,
+        Stream -> Plank,
+    }};
+}
+impl Parse for Root {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let content;
         Ok(Self {
             attrs: Attribute::parse_outer(input)?,
             vis: input.parse()?,
             r#enum: input.parse()?,
-            name: input.parse()?,
+            ident: input.parse()?,
             generics: {
                 let mut it = input.parse::<Generics>()?;
                 it.where_clause = input.parse()?;
                 it
             },
             brace: braced!(content in input),
-            dfn: Punctuated::parse_terminated(&content)?,
+            stmts: Punctuated::parse_terminated(&content)?,
         })
     }
 }
-pub enum Statement {
-    Node {
-        doc: Vec<DocAttr>,
-        node: Node,
-    },
+
+#[derive(Debug, Clone)]
+pub(crate) enum Statement {
+    Node(Node),
     Transition {
-        doc: Vec<DocAttr>,
         first: Node,
         rest: Vec<(Arrow, Node)>,
     },
 }
-
 impl Parse for Statement {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let doc = parse_docs(input)?;
         let node = input.parse()?;
         let mut rest = vec![];
-        while input.peek(Token![-]) {
+        while input.peek(Token![-]) || input.peek(Token![#]) {
             rest.push((input.parse()?, input.parse()?))
         }
         Ok(match rest.is_empty() {
-            true => Self::Node { doc, node },
-            false => Self::Transition {
-                doc,
-                first: node,
-                rest,
-            },
+            true => Self::Node(node),
+            false => Self::Transition { first: node, rest },
         })
     }
 }
 
-pub struct Node {
+#[derive(Debug, Clone)]
+pub(crate) struct Node {
+    pub doc: Vec<DocAttr>,
     pub name: Ident,
     pub ty: Option<(token::Paren, Type)>,
 }
-
 impl Parse for Node {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         Ok(Self {
+            doc: parse_docs(input)?,
             name: input.parse()?,
             ty: match input.peek(token::Paren) {
                 true => {
@@ -152,34 +106,56 @@ impl Parse for Node {
         })
     }
 }
-pub enum Arrow {
+
+#[derive(Debug, Clone)]
+pub(crate) struct Arrow {
+    pub doc: Vec<DocAttr>,
+    pub kind: ArrowKind,
+}
+impl Parse for Arrow {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            doc: parse_docs(input)?,
+            kind: input.parse()?,
+        })
+    }
+}
+impl ToTokens for Arrow {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self { doc, kind } = self;
+        docs_to_tokens(doc, tokens);
+        kind.to_tokens(tokens);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ArrowKind {
     Plain(Token![->]),
-    Doc {
+    Named {
         start: Token![-],
-        doc: LitStr,
+        ident: Ident,
         end: Token![->],
     },
 }
-impl Parse for Arrow {
+impl Parse for ArrowKind {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         if input.peek(Token![->]) {
             return Ok(Self::Plain(input.parse()?));
         }
-        Ok(Self::Doc {
+        Ok(Self::Named {
             start: input.parse()?,
-            doc: input.parse()?,
+            ident: input.parse()?,
             end: input.parse()?,
         })
     }
 }
-
-impl ToTokens for Arrow {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+impl ToTokens for ArrowKind {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            Arrow::Plain(rarrow) => rarrow.to_tokens(tokens),
-            Arrow::Doc { start, doc, end } => {
+            ArrowKind::Plain(it) => it.to_tokens(tokens),
+            ArrowKind::Named { start, ident, end } => {
                 start.to_tokens(tokens);
-                doc.to_tokens(tokens);
+                ident.to_tokens(tokens);
                 end.to_tokens(tokens);
             }
         }
@@ -187,9 +163,8 @@ impl ToTokens for Arrow {
 }
 
 custom_keyword!(doc);
-
 #[derive(Debug, Clone)]
-pub struct DocAttr {
+pub(crate) struct DocAttr {
     pub pound: Token![#],
     pub bracket: token::Bracket,
     pub doc: doc,
@@ -197,21 +172,19 @@ pub struct DocAttr {
     pub str: LitStr,
 }
 impl DocAttr {
-    pub fn new(lit: LitStr) -> Self {
-        let span = lit.span();
+    pub fn new(s: &str, span: Span) -> Self {
         Self {
             pound: Token![#](span),
             bracket: token::Bracket(span),
             doc: doc(span),
             eq: Token![=](span),
-            str: lit,
+            str: LitStr::new(s, span),
         }
     }
     pub fn empty() -> Self {
-        Self::new(LitStr::new("", Span::call_site()))
+        Self::new("", Span::call_site())
     }
 }
-
 impl Parse for DocAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let content;
@@ -224,9 +197,8 @@ impl Parse for DocAttr {
         })
     }
 }
-
 impl ToTokens for DocAttr {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         let Self {
             pound,
             bracket,
@@ -249,4 +221,64 @@ fn parse_docs(input: ParseStream) -> syn::Result<Vec<DocAttr>> {
         parsed.push(input.parse()?);
     }
     Ok(parsed)
+}
+fn docs_to_tokens(docs: &[DocAttr], tokens: &mut TokenStream) {
+    for doc in docs {
+        doc.to_tokens(tokens);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct VisIdent {
+    pub vis: Visibility,
+    pub ident: Ident,
+}
+impl Parse for VisIdent {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            vis: input.parse()?,
+            ident: input.parse()?,
+        })
+    }
+}
+impl ToTokens for VisIdent {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self { vis, ident } = self;
+        vis.to_tokens(tokens);
+        ident.to_tokens(tokens);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ModulePath {
+    leading_colon: Option<Token![::]>,
+    segments: Punctuated<Ident, Token![::]>,
+}
+impl Parse for ModulePath {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let syn::Path {
+            leading_colon,
+            segments,
+        } = syn::Path::parse_mod_style(input)?;
+        Ok(Self {
+            leading_colon,
+            segments: segments
+                .into_pairs()
+                .map(|it| match it {
+                    Pair::Punctuated(seg, sep) => Pair::Punctuated(seg.ident, sep),
+                    Pair::End(seg) => Pair::End(seg.ident),
+                })
+                .collect(),
+        })
+    }
+}
+impl ToTokens for ModulePath {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            leading_colon,
+            segments,
+        } = self;
+        leading_colon.to_tokens(tokens);
+        segments.to_tokens(tokens);
+    }
 }

@@ -10,11 +10,11 @@ readme.workspace = true
 description.workspace = true
 
 [dependencies]
-derive-quote-to-tokens = "0.1.0"
-derive-syn-parse = "0.2"
-heck = "0.5"
-itertools = "0.13"
 proc-macro2 = { version = "1.0.67", default-features = false }
 syn = { workspace = true, features = ["full", "parsing", "clone-impls"] }
 syn-graphs.workspace = true
 quote.workspace = true
+
+[dev-dependencies]
+prettyplease = "0.2.15"
+expect-test = "1.5.1"
