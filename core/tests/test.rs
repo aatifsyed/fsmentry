@@ -33,6 +33,10 @@ tests! {
     full {
         /// This is a state machine that explores all vertex types
         #[derive(Debug)]
+        #[fsmentry(
+            entry = pub(crate) MyEntry,
+            unsafe(true),
+        )]
         pub enum State<'a, T>
         where
             T: Ord
