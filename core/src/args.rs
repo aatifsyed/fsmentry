@@ -6,7 +6,7 @@ use syn::{
     meta::ParseNestedMeta,
     parenthesized,
     parse::{Parse, ParseStream},
-    Attribute, LitBool, Token,
+    token, Attribute, LitBool, Token,
 };
 
 /// Simple argument parser for `#[foo(bar = .., baz(..))]` arguments.

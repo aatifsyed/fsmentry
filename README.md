@@ -2,101 +2,98 @@
 
 # `fsmentry`
 
-A code generator for finite state machines (FSMs) with the following features:
-- Define your machine as a graph in e.g [`DOT`](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29).
-- An `entry` api to transition the state machine.
-- Illegal states and transitions are unrepresentable.
-- States can contain data.
-- Custom `#[derive(..)]` support.
-- `#![no_std]` support.
-- Inline SVG diagrams of the state machine in docs.
-
 ```rust
-// define the machine.
-// you can also use the DOT language if you prefer.
 fsmentry::dsl! {
-    /// This is a state machine for a traffic light
-    // Documentation on nodes and states will appear in the generated code
-    pub TrafficLight {
-        Red; // this is a state
-        Green: String; // this state has data inside it.
-
-        /// Cars speed up
-        // this documentation is shared among all the edges
-        Red -> RedAmber -> Green;
-        //     ^ states are implicitly created
-
-        /// Cars slow down
-        Green -> Amber -"make sure you stop!"-> Red;
-        //             ^ this documentation is for this edge only
-    }
-}
-
-use traffic_light::{TrafficLight, Entry};
-
-// instantiate the machine
-let mut machine = TrafficLight::new(traffic_light::State::Red);
-loop {
-    match machine.entry() {
-        Entry::Red(it) => it.red_amber(), // transition the state machine
-        // when you transition to a state with data,
-        // you must provide the data
-        Entry::RedAmber(it) => it.green(String::from("this is some data")),
-        Entry::Green(mut it) => {
-            // you can inspect or mutate the data in a state...
-            let data: &String = it.get();
-            let data: &mut String = it.get_mut();
-            // ...and you get it back when you transition out of a state
-            let data: String = it.amber();
-        },
-        Entry::Amber(it) => break,
+    enum TrafficLight {
+        Red -> RedAmber -> Green -> Amber -> Red
     }
 }
 ```
 
-# Cargo features
-
-- `macros` (default): Include the [`dot`] and [`dsl`] macros.
-- `svg` (default): The macros will shell out to `dot`, if available, and
-  generate a diagram of the state machine for documentation.
-- `std` (default): Includes the [`FSMGenerator`], for custom codegen tools.
-- `cli`: This does not affect the library, but if you
-  ```console
-  cargo install fsmentry --features=cli
-  ```
-  You will get an `fsmentry` binary that you can use to generate code.
-
-# Advanced usage
+A code generator for finite state machines (FSMs) with the following features:
+- An `entry` api to transition the state machine.
+- Illegal states and transitions can be made unrepresentable.
+- States can contain data.
+- Generic over user types.
+- Custom `#[derive(..)]` support.
+- Inline SVG diagrams in docs.
+- Generated code is `#[no_std]` compatible.
 
 ```rust
+// define the machine.
 fsmentry::dsl! {
-    #[derive(Clone, Debug, derive_quickcheck_arbitrary::Arbitrary)] // attach `#[derive(..)]`s here
-    pub MyStateMachine { .. }
-}
-use my_state_machine::{MyStateMachine, State, Entry};
-// ^ A module with matching publicity is generated for the state machine.
-//   The `#[derive(..)]`s apply to the `State` and the `MyStateMachine` items.
+    /// This is a state machine for a traffic light
+    // Documentation on nodes and states will appear in the generated code
+    pub enum TrafficLight {
+        /// Documentation for the [`Red`] state.
+        Red, // this is a state
+        Green(String), // this state has data inside it.
 
-let mut machine = MyStateMachine::arbitrary(g); // we can use derived traits!
+        Red -> RedAmber -> Green,
+        //     ^ states can be defined inline.
 
-// you can also inspect and mutate the state yourself.
-let state: &State = machine.state();
-let state: &mut State = machine.state_mut();
-
-match machine.entry() {
-    // states with no transitions and no data are empty entries
-    Entry::DeadEnd => {},
-    // states with no transitions give you the data
-    Entry::DeadEndWithData(data) => {
-        let _: &mut String = data;
-    },
-    Entry::WithTransitions(handle) => {
-        // otherwise, you get a struct which allows you to transition the machine.
-        // (It will have getters for data as appropriate).
-        handle.dead_end();
+        Green -custom_method_name-> Amber
+            /// Custom method documentation
+            -> Red,
     }
-    // ...
 }
+
+// instantiate the machine
+let mut state = TrafficLight::Red;
+loop {
+    match state.entry() {
+        TrafficLightEntry::Red(to) => to.red_amber(), // transition the state machine
+        // when you transition to a state with data,
+        // you must provide the data
+        TrafficLightEntry::RedAmber(to) => to.green(String::from("this is some data")),
+        TrafficLightEntry::Green(mut to) => {
+            // you can inspect or mutate the data in a state...
+            let data: &String = to.as_ref();
+            let data: &mut String = to.as_mut();
+            // ...and you get it back when you transition out of a state
+            let data: String = to.custom_method_name();
+        },
+        TrafficLightEntry::Amber(_) => break,
+    }
+}
+```
+
+# About the generated code.
+
+This macro has three main outputs:
+- A "state" enum, which reflects the enum you pass in.
+- An "entry" enum, with variants that reflect.
+  - Data contained in the state (if any).
+  - Transitions to a different state variant (if any) - see below.
+- "transition" structs, which access the data in a variant and allow only legal transitions via methods.
+  - Transition structs expose their mutable reference to the "state" above,
+    to allow you to write e.g your own pinning logic.
+    It is recommended that you wrap each machine in its own module to keep
+    this reference private, lest you seed panics by manually creating a
+    transition struct with the wrong underlying state.
+
+```rust
+mod my_state { // recommended to create a module per machine.
+fsmentry::dsl! {
+    /// These attributes are passed through to the state enum.
+    #[derive(Debug)]
+    #[fsmentry(
+        mermaid(true), // Embed mermaid-js into the rustdoc to render a diagram.
+        entry(pub(crate) MyEntry), // Override the default visibility and name
+        unsafe(false), // By default, transition structs will panic if constructed incorrectly.
+                       // If you promise to only create valid transition structs,
+                       // or hide the transition structs in their own module,
+                       // you can make these panics unreachable_unchecked instead.
+        rename_methods(false), // By default, non-overridden methods are given
+                               // snake_case names according to their destination
+                               // but you can turn this off.
+    )]
+    pub enum MyState<'a, T> {
+        Start -> GenericData(&'a mut T) -> Stop,
+    }
+}}
+
+assert_impl_debug::<my_state::MyState<u8>>();
 ```
 
 ## Hierarchical state machines
@@ -117,31 +114,29 @@ Here is the example from the [`statig`](https://crates.io/crates/statig) crate:
 ```
 
 ```rust
-fsmentry::dsl! { // the outer state machine
-    pub Webcam {
-        NotBlinking -> Blinking -> NotBlinking;
-        Blinking: super::led::Led; // The `Blinking` state contains a state machine
+fsmentry::dsl! {
+    enum Webcam {
+        NotBlinking -> Blinking(Led) -> NotBlinking
+    }
+}
+fsmentry::dsl! {
+    enum Led {
+        On -> Off -> On,
     }
 }
 
-fsmentry::dsl! { // the inner state machine
-    pub Led {
-        LedOn -> LedOff -> LedOn;
-    }
-}
-
-let mut machine = webcam::Webcam::new(webcam::State::NotBlinking);
+let mut webcam = Webcam::NotBlinking;
 loop {
-    match machine.entry() { // transition the outer machine
-        webcam::Entry::Blinking(mut webcam) => match webcam.get_mut().entry() { // transition the inner machine
-            led::Entry::LedOff(it) => it.led_on(),
-            led::Entry::LedOn(it) => {
-                it.led_off();
+    match webcam.entry() { // transition the outer machine
+        WebcamEntry::Blinking(mut webcam) => match webcam.as_mut().entry() { // transition the inner machine
+            LedEntry::Off(led) => led.on(),
+            LedEntry::On(led) => {
+                led.off();
                 webcam.not_blinking();
             }
         },
-        webcam::Entry::NotBlinking(webcam) => {
-            webcam.blinking(led::Led::new(led::State::LedOff))
+        WebcamEntry::NotBlinking(webcam) => {
+            webcam.blinking(Led::On)
         }
     }
 }

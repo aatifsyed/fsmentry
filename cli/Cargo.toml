@@ -1,5 +1,5 @@
 [package]
-name = "fsmentry-macros"
+name = "fsmentry-cli"
 version.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -9,13 +9,11 @@ homepage.workspace = true
 readme.workspace = true
 description.workspace = true
 
-[lib]
-proc-macro = true
-
-[features]
-svg = []
-
 [dependencies]
-syn = { workspace = true, features = ["proc-macro"] }
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
 fsmentry-core.workspace = true
-quote = { workspace = true, features = ["proc-macro"] }
+prettyplease = "0.2"
+quote = { version = "1", default-features = false }
+syn = { version = "2", default-features = false }
+syn-miette = "0.3.0"

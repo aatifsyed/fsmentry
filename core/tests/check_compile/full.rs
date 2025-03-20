@@ -20,7 +20,7 @@ where
     UnmarkedGrave,
 }
 /// Progress through variants of [`State`], created by its [`entry`](State::entry) method.
-pub enum StateEntry<'state, 'a, T>
+pub(crate) enum MyEntry<'state, 'a, T>
 where
     T: Ord,
 {
@@ -70,22 +70,20 @@ where
     UnmarkedGrave,
 }
 impl<'state, 'a, T> ::core::convert::From<&'state mut State<'a, T>>
-for StateEntry<'state, 'a, T>
+for MyEntry<'state, 'a, T>
 where
     T: Ord,
 {
     fn from(value: &'state mut State<'a, T>) -> Self {
         match value {
-            State::BeautifulBridge(_) => {
-                StateEntry::BeautifulBridge(BeautifulBridge(value))
-            }
-            State::DesertIsland => StateEntry::DesertIsland,
-            State::Fountain(_) => StateEntry::Fountain(Fountain(value)),
-            State::Plank => StateEntry::Plank(Plank(value)),
-            State::PopulatedIsland(it) => StateEntry::PopulatedIsland(it),
-            State::Stream => StateEntry::Stream(Stream(value)),
-            State::Tombstone(it) => StateEntry::Tombstone(it),
-            State::UnmarkedGrave => StateEntry::UnmarkedGrave,
+            State::BeautifulBridge(_) => MyEntry::BeautifulBridge(BeautifulBridge(value)),
+            State::DesertIsland => MyEntry::DesertIsland,
+            State::Fountain(_) => MyEntry::Fountain(Fountain(value)),
+            State::Plank => MyEntry::Plank(Plank(value)),
+            State::PopulatedIsland(it) => MyEntry::PopulatedIsland(it),
+            State::Stream => MyEntry::Stream(Stream(value)),
+            State::Tombstone(it) => MyEntry::Tombstone(it),
+            State::UnmarkedGrave => MyEntry::UnmarkedGrave,
         }
     }
 }
@@ -93,26 +91,35 @@ impl<'a, T> State<'a, T>
 where
     T: Ord,
 {
-    pub fn entry<'state>(&'state mut self) -> StateEntry<'state, 'a, T> {
+    #[allow(clippy::needless_lifetimes)]
+    pub(crate) fn entry<'state>(&'state mut self) -> MyEntry<'state, 'a, T> {
         self.into()
     }
 }
-pub struct BeautifulBridge<'state, 'a, T>(
+/// See [`MyEntry::BeautifulBridge`]
+pub(crate) struct BeautifulBridge<'state, 'a, T>(
+    /// MUST match [`MyEntry::BeautifulBridge`]
     &'state mut State<'a, T>,
 )
 where
     T: Ord;
-pub struct Fountain<'state, 'a, T>(
+/// See [`MyEntry::Fountain`]
+pub(crate) struct Fountain<'state, 'a, T>(
+    /// MUST match [`MyEntry::Fountain`]
     &'state mut State<'a, T>,
 )
 where
     T: Ord;
-pub struct Plank<'state, 'a, T>(
+/// See [`MyEntry::Plank`]
+pub(crate) struct Plank<'state, 'a, T>(
+    /// MUST match [`MyEntry::Plank`]
     &'state mut State<'a, T>,
 )
 where
     T: Ord;
-pub struct Stream<'state, 'a, T>(
+/// See [`MyEntry::Stream`]
+pub(crate) struct Stream<'state, 'a, T>(
+    /// MUST match [`MyEntry::Stream`]
     &'state mut State<'a, T>,
 )
 where
@@ -125,7 +132,7 @@ where
     fn as_ref(&self) -> &Vec<u8> {
         match &self.0 {
             State::BeautifulBridge(it) => it,
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -137,7 +144,7 @@ where
     fn as_mut(&mut self) -> &mut Vec<u8> {
         match &mut self.0 {
             State::BeautifulBridge(it) => it,
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -149,7 +156,7 @@ where
     fn as_ref(&self) -> &&'a mut T {
         match &self.0 {
             State::Fountain(it) => it,
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -161,7 +168,7 @@ where
     fn as_mut(&mut self) -> &mut &'a mut T {
         match &mut self.0 {
             State::Fountain(it) => it,
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -174,7 +181,7 @@ where
     pub fn bridge2tombstone(self, next: char) -> Vec<u8> {
         match ::core::mem::replace(self.0, State::Tombstone(next)) {
             State::BeautifulBridge(it) => it,
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -189,7 +196,7 @@ where
     pub fn fountain2bridge(self, next: Vec<u8>) -> &'a mut T {
         match ::core::mem::replace(self.0, State::BeautifulBridge(next)) {
             State::Fountain(it) => it,
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -202,7 +209,7 @@ where
     pub fn plank(self) -> &'a mut T {
         match ::core::mem::replace(self.0, State::Plank) {
             State::Fountain(it) => it,
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -215,7 +222,7 @@ where
     pub fn unmarked_grave(self) {
         match ::core::mem::replace(self.0, State::UnmarkedGrave) {
             State::Plank => {}
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -228,7 +235,7 @@ where
     pub fn beautiful_bridge(self, next: Vec<u8>) {
         match ::core::mem::replace(self.0, State::BeautifulBridge(next)) {
             State::Stream => {}
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }
@@ -241,7 +248,7 @@ where
     pub fn plank(self) {
         match ::core::mem::replace(self.0, State::Plank) {
             State::Stream => {}
-            _ => ::core::panic!("entry struct was instantiated with a mismatched state"),
+            _ => unsafe { ::core::hint::unreachable_unchecked() }
         }
     }
 }

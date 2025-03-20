@@ -1,33 +1,30 @@
-/// This machine exercises all vertex types, with and without data.
-#[derive(Clone, Debug)]
-pub ExampleMachine {
-    /// An isolated vertex with associated data
-    PopulatedIsland: String;
-    /// An isolated vertex with no data
-    DesertIsland;
-    /// A vertex with nonzero indegree and outdegree, with associated data
-    BeautifulBridge: Vec<u8>;
-    /// A vertex with nonzero indegree and outdegree, with no data
-    Plank;
-    /// A sink with data
-    Tombstone: char;
-    /// A sink with no data
-    UnmarkedGrave;
-    /// A source with data
-    Fountain: std::net::IpAddr;
-    /// A source with no data
-    Stream;
-    
-    BeautifulBridge -> UnmarkedGrave;
+/// This explores all vertex types.
+#[derive(Debug)]
+#[fsmentry(
+    mermaid(true),
+)]
+pub enum State<'a, T>
+where
+    T: Ord
+{
+    /// Isolated vertex, with data.
+    IsolatedWithData(String),
+    /// Isolated vertex, without data.
+    IsolatedEmpty,
 
-    Plank -"plank transitions to tombstone"-> Tombstone;
-    
-    /// This documentation is shared from `Fountain` to `BeautifulBridge` to `Tombstone`
-    Fountain -> BeautifulBridge -> Tombstone;
+    /// Source vertex, with data.
+    SourceWithData(&'a mut T)
+        /// Method documentation on renamed method.
+        -to_non_terminal_with_data->
+        /// Non-terminal vertex, with data.
+        NonTerminalWithData(Vec<u8>)
+        /// Method documentation on a non-renamed method.
+        ->
+        /// Sink vertex, with data.
+        SinkWithData(char),
 
-    /// This is also shared among a few transitions.
-    Fountain -"just on fountain to plank"-> Plank -> UnmarkedGrave;
-    
-    Stream --> BeautifulBridge;
-    Stream --"different arrow lengths are ok"-> Plank;
+    SourceWithData -> NonTerminalEmpty -> SinkEmpty,
+
+    SourceEmpty -> NonTerminalWithData,
+    SourceEmpty -> NonTerminalEmpty,
 }

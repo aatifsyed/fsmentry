@@ -6,7 +6,11 @@ mod args;
 mod dsl;
 mod graph;
 
-use std::{collections::BTreeMap, iter};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    iter,
+};
 
 use args::*;
 use proc_macro2::{Span, TokenStream};
@@ -30,12 +34,66 @@ macro_rules! bail_at {
     };
 }
 
-pub fn from_dsl(tokens: TokenStream) -> syn::Result<TokenStream> {
-    Ok(syn::parse2::<FsmEntry>(tokens)?.to_token_stream())
+/// Renderer for mermaid diagrams.
+pub trait Renderer {
+    /// Return [`None`] to skip rendering.
+    fn render(&self, diagram: &str) -> Option<String>;
+}
+
+/// Skip rendering entirely.
+impl Renderer for () {
+    fn render(&self, _: &str) -> Option<String> {
+        None
+    }
+}
+
+/// Forward to the inner [`Renderer`], if present.
+impl<T: Renderer> Renderer for Option<T> {
+    fn render(&self, diagram: &str) -> Option<String> {
+        self.as_ref().and_then(|it| it.render(diagram))
+    }
+}
+
+/// Call the provided function.
+impl<F: Fn(&str) -> Option<String>> Renderer for F {
+    fn render(&self, diagram: &str) -> Option<String> {
+        self(diagram)
+    }
+}
+
+/// A [`Renderer`] which embeds a script to load `mermaidjs` into the docs.
+pub struct Mermaid(
+    /// The URL to import mermaid from.
+    pub String,
+);
+
+impl Default for Mermaid {
+    fn default() -> Self {
+        Self(String::from(
+            "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs",
+        ))
+    }
+}
+
+impl Renderer for Mermaid {
+    fn render(&self, diagram: &str) -> Option<String> {
+        Some(format!(
+            "\
+<pre class=\"mermaid\">
+{diagram}
+</pre>
+<script type=\"module\">
+  import mermaid from \"{}\";
+  var doc_theme = localStorage.getItem(\"rustdoc-theme\");
+  if (doc_theme === \"dark\" || doc_theme === \"ayu\") mermaid.initialize({{theme: \"dark\"}});
+</script>",
+            self.0
+        ))
+    }
 }
 
 /// A [`Parse`]-able and [printable](ToTokens) representation of a state machine.
-pub struct FsmEntry {
+pub struct FsmEntry<MermaidR = ()> {
     state_attrs: Vec<Attribute>,
     state_vis: Visibility,
     state_ident: Ident,
@@ -44,27 +102,99 @@ pub struct FsmEntry {
     r#unsafe: bool,
     path_to_core: ModulePath,
 
-    extra_entry_attrs: Vec<Attribute>,
     entry_vis: Visibility,
     entry_ident: Ident,
     entry_lifetime: Lifetime,
 
     graph: Graph,
+
+    render_mermaid: bool,
+    mermaid_renderer: MermaidR,
 }
 
-impl FsmEntry {
-    pub fn extend_entry_attrs(&mut self, ii: impl IntoIterator<Item = Attribute>) {
-        self.extra_entry_attrs.extend(ii);
+impl<MermaidR> FsmEntry<MermaidR> {
+    /// Change the mermaid renderer.
+    pub fn map_mermaid<F, MermaidR2>(self, f: F) -> FsmEntry<MermaidR2>
+    where
+        F: FnOnce(MermaidR) -> MermaidR2,
+    {
+        let Self {
+            state_attrs,
+            state_vis,
+            state_ident,
+            state_generics,
+            r#unsafe,
+            path_to_core,
+            entry_vis,
+            entry_ident,
+            entry_lifetime,
+            graph,
+            render_mermaid,
+            mermaid_renderer,
+        } = self;
+        FsmEntry {
+            state_attrs,
+            state_vis,
+            state_ident,
+            state_generics,
+            r#unsafe,
+            path_to_core,
+            entry_vis,
+            entry_ident,
+            entry_lifetime,
+            graph,
+            render_mermaid,
+            mermaid_renderer: f(mermaid_renderer),
+        }
     }
-    pub fn nodes(&self) -> impl Iterator<Item = &Ident> {
+    fn nodes(&self) -> impl Iterator<Item = &Ident> {
         self.graph.nodes.keys().map(|NodeId(ident)| ident)
     }
-    pub fn edges(&self) -> impl Iterator<Item = (&Ident, &Ident)> {
+    fn edges(&self) -> impl Iterator<Item = (&Ident, &Ident)> {
         self.graph.edges.keys().map(|(NodeId(f), NodeId(t))| (f, t))
     }
+    pub fn dot(&self) -> String {
+        let mut s = format!("digraph {}{{\n", self.state_ident);
+        for draw in self.draw() {
+            match draw {
+                Draw::Edge(l, r) => s.write_fmt(format_args!("  {l} -> {r};\n")),
+                Draw::Node(it) => s.write_fmt(format_args!("  {it};\n")),
+            }
+            .unwrap();
+        }
+        s.push_str("}\n");
+        s
+    }
+    pub fn mermaid(&self) -> String {
+        let mut s = String::from("graph LR\n");
+        for draw in self.draw() {
+            match draw {
+                Draw::Edge(l, r) => s.write_fmt(format_args!("  {l} --> {r};\n")),
+                Draw::Node(it) => s.write_fmt(format_args!("  {it};\n")),
+            }
+            .unwrap()
+        }
+        s
+    }
+    fn draw(&self) -> impl Iterator<Item = Draw<'_>> {
+        let mut nodes = self.nodes().collect::<BTreeSet<_>>();
+        let edges = self
+            .edges()
+            .map(|(l, r)| {
+                nodes.remove(l);
+                nodes.remove(r);
+                Draw::Edge(l, r)
+            })
+            .collect::<Vec<_>>();
+        edges.into_iter().chain(nodes.into_iter().map(Draw::Node))
+    }
+}
+enum Draw<'a> {
+    Edge(&'a Ident, &'a Ident),
+    Node(&'a Ident),
 }
 
-impl ToTokens for FsmEntry {
+impl<MermaidR: Renderer> ToTokens for FsmEntry<MermaidR> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let Self {
             state_attrs,
@@ -77,7 +207,8 @@ impl ToTokens for FsmEntry {
             entry_ident,
             entry_lifetime,
             graph,
-            extra_entry_attrs,
+            mermaid_renderer,
+            render_mermaid,
         } = self;
         let mut state_variants: Vec<Variant> = vec![];
         let mut entry_variants: Vec<Variant> = vec![];
@@ -133,8 +264,12 @@ impl ToTokens for FsmEntry {
                 }
             });
             if let Kind::Source(outgoing) | Kind::NonTerminal { outgoing, .. } = kind {
+                let outer_doc = format!(" See [`{entry_ident}::{node}`]");
+                let field_doc = format!(" MUST match [`{entry_ident}::{node}`]");
                 entry_structs.push(parse_quote! {
+                    #[doc = #outer_doc]
                     #entry_vis struct #node #entry_type_generics(
+                        #[doc = #field_doc]
                         & #entry_lifetime mut #state_ident #state_type_generics
                     )
                     #where_clause;
@@ -185,13 +320,18 @@ impl ToTokens for FsmEntry {
             }
         }
 
-        let mut entry_attrs = vec![{
+        let mut entry_attrs: Vec<Attribute> = vec![{
             let doc = format!(" Progress through variants of [`{state_ident}`], created by its [`entry`]({state_ident}::entry) method.");
             parse_quote!(#[doc = #doc])
         }];
-        if !extra_entry_attrs.is_empty() {
-            entry_attrs.push(parse_quote!(#[doc = ""]));
-            entry_attrs.extend(extra_entry_attrs.clone());
+
+        if *render_mermaid {
+            if let Some(rendered) = mermaid_renderer.render(&self.mermaid()) {
+                if !entry_attrs.is_empty() {
+                    entry_attrs.push(parse_quote!(#[doc = ""]));
+                }
+                entry_attrs.push(parse_quote!(#[doc = #rendered]));
+            }
         }
 
         tokens.extend(quote! {
@@ -215,6 +355,7 @@ impl ToTokens for FsmEntry {
             }
             impl #state_impl_generics #state_ident #state_type_generics
             #where_clause {
+                #[allow(clippy::needless_lifetimes)]
                 #entry_vis fn entry<#entry_lifetime>(& #entry_lifetime mut self) -> #entry_ident #entry_type_generics {
                     self.into()
                 }
@@ -245,14 +386,19 @@ impl Parse for FsmEntry {
         };
         let mut r#unsafe = false;
         let mut path_to_core: ModulePath = parse_quote!(::core);
+        let mut render_mermaid = false;
         let mut parser = Parser::new()
             .once("rename_methods", on_value(bool(&mut rename_methods)))
             .once("entry", on_value(parse(&mut entry)))
             .once("unsafe", on_value(bool(&mut r#unsafe)))
-            .once("path_to_core", on_value(parse(&mut path_to_core)));
+            .once("path_to_core", on_value(parse(&mut path_to_core)))
+            .once("mermaid", on_value(bool(&mut render_mermaid)));
         parser.extract("fsmentry", &mut state_attrs)?;
         drop(parser);
         let graph = stmts2graph(&stmts, rename_methods)?;
+        if graph.edges.is_empty() {
+            bail_at!(state_ident.span(), "must define at least one edge `A -> B`");
+        }
         let VisIdent {
             vis: entry_vis,
             ident: entry_ident,
@@ -268,8 +414,9 @@ impl Parse for FsmEntry {
             entry_vis,
             entry_ident,
             entry_lifetime: parse_quote!('state),
-            extra_entry_attrs: vec![],
             graph,
+            mermaid_renderer: (),
+            render_mermaid,
         })
     }
 }

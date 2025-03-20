@@ -62,4 +62,10 @@ tests! {
             Stream -> Plank,
         }
     }
+    simple {
+        enum Road {
+            Start -> Fork -> End,
+            Fork -> Start,
+        }
+    }
 }

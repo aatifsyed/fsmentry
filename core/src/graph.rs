@@ -1,3 +1,4 @@
+use core::fmt;
 use std::collections::BTreeMap;
 
 use proc_macro2::{Ident, TokenStream};
@@ -10,6 +11,11 @@ pub(crate) struct NodeId(pub Ident);
 impl ToTokens for NodeId {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         self.0.to_tokens(tokens);
+    }
+}
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
