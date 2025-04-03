@@ -20,10 +20,11 @@
 // - Define your machine as a graph in e.g [`DOT`](https://en.wikipedia.org/wiki/DOT_%28graph_description_language%29).
 //!
 //! ```
+//! # use fsmentry::fsmentry;
 //! // define the machine.
 // TODO
 // // you can also use the DOT language if you prefer.
-//! fsmentry::dsl! {
+//! fsmentry! {
 //!     /// This is a state machine for a traffic light
 //!     // Documentation on nodes and states will appear in the generated code
 //!     pub enum TrafficLight {
@@ -76,7 +77,7 @@
 //!
 //! ```
 //! mod my_state { // recommended to create a module per machine.
-//! fsmentry::dsl! {
+//! fsmentry::fsmentry! {
 //!     /// These attributes are passed through to the state enum.
 //!     #[derive(Debug)]
 //!     #[fsmentry(
@@ -117,12 +118,13 @@
 //! ```
 //!
 //! ```no_run
-//! fsmentry::dsl! {
+//! # use fsmentry::fsmentry;
+//! fsmentry! {
 //!     enum Webcam {
 //!         NotBlinking -> Blinking(Led) -> NotBlinking
 //!     }
 //! }
-//! fsmentry::dsl! {
+//! fsmentry! {
 //!     enum Led {
 //!         On -> Off -> On,
 //!     }
@@ -173,8 +175,19 @@ use proc_macro2::TokenStream;
 use quote::ToTokens as _;
 use syn::parse_macro_input;
 
+/// Accept a state machine definition as follows:
+/// ```
+/// # use fsmentry::fsmentry;
+/// fsmentry! {
+///     pub enum TrafficLight<T> {
+///         Red -> RedAmber -> Green(T) -> Amber -> Red,
+///     }
+/// }
+/// ```
+///
+/// For more, see the [crate documentation](mod@self).
 #[proc_macro]
-pub fn dsl(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn fsmentry(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // hide from docs.rs
     fn _dsl(entry: FsmEntry) -> syn::Result<TokenStream> {
         Ok(entry.map_mermaid(|()| Mermaid::default()).to_token_stream())
