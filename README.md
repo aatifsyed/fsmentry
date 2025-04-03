@@ -21,7 +21,7 @@ A code generator for finite state machines (FSMs) with the following features:
 
 ```rust
 // define the machine.
-fsmentry::dsl! {
+fsmentry! {
     /// This is a state machine for a traffic light
     // Documentation on nodes and states will appear in the generated code
     pub enum TrafficLight {
@@ -74,7 +74,7 @@ This macro has three main outputs:
 
 ```rust
 mod my_state { // recommended to create a module per machine.
-fsmentry::dsl! {
+fsmentry::fsmentry! {
     /// These attributes are passed through to the state enum.
     #[derive(Debug)]
     #[fsmentry(
@@ -114,12 +114,12 @@ Here is the example from the [`statig`](https://crates.io/crates/statig) crate:
 ```
 
 ```rust
-fsmentry::dsl! {
+fsmentry! {
     enum Webcam {
         NotBlinking -> Blinking(Led) -> NotBlinking
     }
 }
-fsmentry::dsl! {
+fsmentry! {
     enum Led {
         On -> Off -> On,
     }
