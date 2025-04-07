@@ -1,7 +1,8 @@
 //! # `fsmentry`
 //!
 //! ```
-//! fsmentry::dsl! {
+//! # use fsmentry::fsmentry;
+//! fsmentry! {
 //!     enum TrafficLight {
 //!         Red -> RedAmber -> Green -> Amber -> Red
 //!     }
