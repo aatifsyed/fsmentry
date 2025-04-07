@@ -30,7 +30,7 @@ expect-test = "1.5.1"
 
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 repository = "https://github.com/aatifsyed/fsmentry"
@@ -43,7 +43,7 @@ description = "Finite State Machines with an entry API and data storage"
 members = ["core", "cli"]
 
 [workspace.dependencies]
-fsmentry-core = { version = "0.3.0", path = "core" }
+fsmentry-core = { version = "0.4.0", path = "core" }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--document-private-items"]
