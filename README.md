@@ -3,7 +3,7 @@
 # `fsmentry`
 
 ```rust
-fsmentry::dsl! {
+fsmentry! {
     enum TrafficLight {
         Red -> RedAmber -> Green -> Amber -> Red
     }
