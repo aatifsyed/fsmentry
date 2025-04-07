@@ -4,6 +4,7 @@ use syn::{
     braced, bracketed, custom_keyword, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::{Pair, Punctuated},
+    spanned::Spanned as _,
     token, Attribute, Generics, Ident, LitStr, Token, Type, Visibility,
 };
 
@@ -11,7 +12,7 @@ pub(crate) struct Root {
     pub attrs: Vec<Attribute>,
     pub vis: Visibility,
     #[allow(unused)]
-    pub r#enum: token::Enum, // can't use `Token![enum]` with `#[derive(..)]`
+    pub r#enum: Token![enum],
     pub ident: Ident,
     pub generics: Generics,
     #[allow(unused)]
@@ -57,7 +58,40 @@ impl Parse for Root {
                 it
             },
             brace: braced!(content in input),
-            stmts: Punctuated::parse_terminated(&content)?,
+            stmts: {
+                let mut stmts = Punctuated::new();
+                while !content.is_empty() {
+                    let fork = content.fork();
+                    fork.parse::<Node>()?;
+                    if fork.peek(Token![,]) || fork.is_empty() {
+                        stmts.push(Statement::Node(content.parse()?));
+                    } else {
+                        let first = content.parse()?;
+                        let mut rest = vec![];
+                        while content.peek(Token![-]) || content.peek(Token![#]) {
+                            let arrow = content.parse::<Arrow>()?;
+                            let next = content.parse::<NodeGroup>()?;
+                            if next.into_iter().len() > 1
+                                && matches!(arrow.kind, ArrowKind::Named { .. })
+                            {
+                                let msg = "Named transitions (`-name->`) to node groups (`A & B`) are not supported, since it requires duplicate method names";
+                                return Err(syn::Error::new(arrow.kind.span(), msg));
+                            }
+                            rest.push((arrow, next));
+                        }
+                        if rest.is_empty() {
+                            return Err(content.error(
+                                "Node groups (`A & B`) must be followed by transitions (`->`)",
+                            ));
+                        }
+                        stmts.push(Statement::Transition { first, rest });
+                    }
+                    if !content.is_empty() {
+                        stmts.push_punct(content.parse()?);
+                    }
+                }
+                stmts
+            },
         })
     }
 }
@@ -65,22 +99,9 @@ impl Parse for Root {
 pub(crate) enum Statement {
     Node(Node),
     Transition {
-        first: Node,
-        rest: Vec<(Arrow, Node)>,
+        first: NodeGroup,
+        rest: Vec<(Arrow, NodeGroup)>,
     },
-}
-impl Parse for Statement {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let node = input.parse()?;
-        let mut rest = vec![];
-        while input.peek(Token![-]) || input.peek(Token![#]) {
-            rest.push((input.parse()?, input.parse()?))
-        }
-        Ok(match rest.is_empty() {
-            true => Self::Node(node),
-            false => Self::Transition { first: node, rest },
-        })
-    }
 }
 
 pub(crate) struct Node {
@@ -101,6 +122,22 @@ impl Parse for Node {
                 false => None,
             },
         })
+    }
+}
+
+pub(crate) struct NodeGroup(Punctuated<Node, Token![&]>);
+
+impl Parse for NodeGroup {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(Self(Punctuated::parse_separated_nonempty(input)?))
+    }
+}
+
+impl<'a> IntoIterator for &'a NodeGroup {
+    type Item = &'a Node;
+    type IntoIter = <&'a Punctuated<Node, Token![&]> as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 

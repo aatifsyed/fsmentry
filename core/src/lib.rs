@@ -433,10 +433,12 @@ fn stmts2graph(
     // Define all the nodes upfront.
     // Note that transition definitions may include types, at any location.
     for Node { name, ty, doc } in stmts.iter().flat_map(|it| match it {
-        Statement::Node(it) => Box::new(iter::once(it)) as Box<dyn Iterator<Item = _>>,
-        Statement::Transition { first, rest, .. } => {
-            Box::new(iter::once(first).chain(rest.iter().map(|(_, it)| it)))
-        }
+        Statement::Node(it) => Box::new(iter::once(it)) as Box<dyn Iterator<Item = &Node>>,
+        Statement::Transition { first, rest, .. } => Box::new(
+            first
+                .into_iter()
+                .chain(rest.iter().flat_map(|(_, grp)| grp)),
+        ),
     }) {
         let ty = ty.as_ref().map(|(_, it)| it);
         match nodes.entry(NodeId(name.clone())) {
@@ -466,25 +468,32 @@ fn stmts2graph(
             continue; // handled above
         };
 
-        let mut from = first.name.clone();
+        let mut grp_left = first;
 
-        for (Arrow { doc, kind }, Node { name: to, .. }) in rest {
-            match edges.entry((NodeId(from.clone()), NodeId(to.clone()))) {
-                Occupied(_) => bail_at!(kind.span(), "duplicate edge definition"),
-                Vacant(v) => {
-                    v.insert(EdgeData {
-                        doc: doc.clone(),
-                        method_name: match kind {
-                            ArrowKind::Plain(_) => match rename_methods {
-                                true => snake_case(to),
-                                false => to.clone(),
-                            },
-                            ArrowKind::Named { ident, .. } => ident.clone(),
-                        },
-                    });
+        for (Arrow { doc, kind }, grp_right) in rest {
+            for from in grp_left {
+                for to in grp_right {
+                    match edges.entry((NodeId(from.name.clone()), NodeId(to.name.clone()))) {
+                        Occupied(already) => {
+                            let (a, b) = already.key();
+                            bail_at!(kind.span(), "duplicate edge definition between {a} and {b}")
+                        }
+                        Vacant(v) => {
+                            v.insert(EdgeData {
+                                doc: doc.clone(),
+                                method_name: match kind {
+                                    ArrowKind::Plain(_) => match rename_methods {
+                                        true => snake_case(&to.name),
+                                        false => to.name.clone(),
+                                    },
+                                    ArrowKind::Named { ident, .. } => ident.clone(),
+                                },
+                            });
+                        }
+                    }
                 }
             }
-            from = to.clone();
+            grp_left = grp_right;
         }
     }
 

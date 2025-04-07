@@ -93,6 +93,10 @@
 //!     )]
 //!     pub enum MyState<'a, T> {
 //!         Start -> GenericData(&'a mut T) -> Stop,
+//!         Start & GenericData -> Error,
+//!            // ^ This is shorthand for the following:
+//!            //   Start -> Error,
+//!            //   GenericData -> Error,
 //!     }
 //! }}
 //!
